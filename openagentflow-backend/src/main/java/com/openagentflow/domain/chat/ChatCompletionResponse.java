@@ -68,6 +68,9 @@ public class ChatCompletionResponse {
     /** 工具调用结果列表。 */
     private List<Map<String, Object>> toolResults;
 
+    /** 本轮输入的结构化意图路由计划。 */
+    private IntentRoutePlan intentRoute;
+
     public String getRunId() {
         return runId;
     }
@@ -218,5 +221,13 @@ public class ChatCompletionResponse {
 
     public void setToolResults(List<Map<String, Object>> toolResults) {
         this.toolResults = toolResults;
+    }
+
+    public IntentRoutePlan getIntentRoute() {
+        return intentRoute;
+    }
+
+    public void setIntentRoute(IntentRoutePlan intentRoute) {
+        this.intentRoute = intentRoute;
     }
 }

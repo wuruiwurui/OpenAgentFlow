@@ -49,6 +49,18 @@ public class KnowledgeRetrievalRequest {
     /** 元数据关键词，会匹配分片标题、正文和 metadata JSON。 */
     private String metadataKeyword;
 
+    /** 是否启用查询规范化、口语清理和同义词改写。 */
+    private Boolean queryRewriteEnabled;
+
+    /** 是否使用多个查询变体执行召回并融合。 */
+    private Boolean multiQueryEnabled;
+
+    /** 单次检索允许生成的最大查询变体数量。 */
+    private Integer maxQueryVariants;
+
+    /** 最近会话上下文，用于消解“它、这个、上述”等指代表达。 */
+    private String conversationContext;
+
     public String getQuery() {
         return query;
     }
@@ -151,5 +163,37 @@ public class KnowledgeRetrievalRequest {
 
     public void setMetadataKeyword(String metadataKeyword) {
         this.metadataKeyword = metadataKeyword;
+    }
+
+    public Boolean getQueryRewriteEnabled() {
+        return queryRewriteEnabled;
+    }
+
+    public void setQueryRewriteEnabled(Boolean queryRewriteEnabled) {
+        this.queryRewriteEnabled = queryRewriteEnabled;
+    }
+
+    public Boolean getMultiQueryEnabled() {
+        return multiQueryEnabled;
+    }
+
+    public void setMultiQueryEnabled(Boolean multiQueryEnabled) {
+        this.multiQueryEnabled = multiQueryEnabled;
+    }
+
+    public Integer getMaxQueryVariants() {
+        return maxQueryVariants;
+    }
+
+    public void setMaxQueryVariants(Integer maxQueryVariants) {
+        this.maxQueryVariants = maxQueryVariants;
+    }
+
+    public String getConversationContext() {
+        return conversationContext;
+    }
+
+    public void setConversationContext(String conversationContext) {
+        this.conversationContext = conversationContext;
     }
 }

@@ -550,6 +550,18 @@ public class OpenAgentFlowProperties {
         /** Milvus 不可用时是否允许扫描 MySQL 向量，仅限本地开发兼容。 */
         private Boolean allowMysqlVectorFallback = false;
 
+        /** 是否默认启用 RAG 查询改写。 */
+        private Boolean queryRewriteEnabled = true;
+
+        /** 是否默认启用多查询召回融合。 */
+        private Boolean multiQueryEnabled = true;
+
+        /** 默认最大查询变体数量。 */
+        private Integer maxQueryVariants = 4;
+
+        /** 真实 Cross-Encoder 单次最大候选数量。 */
+        private Integer rerankCandidateLimit = 30;
+
         public Integer getDefaultTopK() {
             return defaultTopK;
         }
@@ -604,6 +616,38 @@ public class OpenAgentFlowProperties {
 
         public void setAllowMysqlVectorFallback(Boolean allowMysqlVectorFallback) {
             this.allowMysqlVectorFallback = allowMysqlVectorFallback;
+        }
+
+        public Boolean getQueryRewriteEnabled() {
+            return queryRewriteEnabled;
+        }
+
+        public void setQueryRewriteEnabled(Boolean queryRewriteEnabled) {
+            this.queryRewriteEnabled = queryRewriteEnabled;
+        }
+
+        public Boolean getMultiQueryEnabled() {
+            return multiQueryEnabled;
+        }
+
+        public void setMultiQueryEnabled(Boolean multiQueryEnabled) {
+            this.multiQueryEnabled = multiQueryEnabled;
+        }
+
+        public Integer getMaxQueryVariants() {
+            return maxQueryVariants;
+        }
+
+        public void setMaxQueryVariants(Integer maxQueryVariants) {
+            this.maxQueryVariants = maxQueryVariants;
+        }
+
+        public Integer getRerankCandidateLimit() {
+            return rerankCandidateLimit;
+        }
+
+        public void setRerankCandidateLimit(Integer rerankCandidateLimit) {
+            this.rerankCandidateLimit = rerankCandidateLimit;
         }
     }
 }

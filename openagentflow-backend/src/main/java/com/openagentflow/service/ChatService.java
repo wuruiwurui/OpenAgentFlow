@@ -6,6 +6,7 @@ import com.openagentflow.domain.chat.ChatCompletionRequest;
 import com.openagentflow.domain.chat.ChatCompletionResponse;
 import com.openagentflow.domain.chat.ChatMessage;
 import com.openagentflow.domain.chat.ChatRunContext;
+import com.openagentflow.domain.chat.IntentRoutePlan;
 import com.openagentflow.domain.chat.LlmCallResult;
 import com.openagentflow.domain.chat.ToolCallRequest;
 import com.openagentflow.domain.chat.ToolDefinitionForModel;
@@ -44,7 +45,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -120,6 +120,9 @@ public class ChatService {
     /** 统一Prompt Runtime服务。 */
     private final PromptRuntimeService promptRuntimeService;
 
+    /** 通用多意图路由策略。 */
+    private final IntentRoutingPolicy intentRoutingPolicy;
+
     public ChatService(AgentMapper agentMapper,
                        AgentAccessService agentAccessService,
                        ModelConfigMapper modelConfigMapper,
@@ -139,7 +142,8 @@ public class ChatService {
                        RuntimeControlService runtimeControlService,
                        AiGuardrailService aiGuardrailService,
                        RuntimeEventStreamService runtimeEventStreamService,
-                       PromptRuntimeService promptRuntimeService) {
+                       PromptRuntimeService promptRuntimeService,
+                       IntentRoutingPolicy intentRoutingPolicy) {
         this.agentMapper = agentMapper;
         this.agentAccessService = agentAccessService;
         this.modelConfigMapper = modelConfigMapper;
@@ -160,6 +164,7 @@ public class ChatService {
         this.aiGuardrailService = aiGuardrailService;
         this.runtimeEventStreamService = runtimeEventStreamService;
         this.promptRuntimeService = promptRuntimeService;
+        this.intentRoutingPolicy = intentRoutingPolicy;
     }
 
     /**
@@ -175,8 +180,11 @@ public class ChatService {
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
         context.setRunId(run.getId());
+        recordIntentRouteStep(run.getId(), request.getInput(), context.getIntentRoutePlan());
         enrichContextWithMemory(context, request);
-        enrichContextWithRag(context, request, run.getId());
+        if (shouldRetrieveKnowledge(context)) {
+            enrichContextWithRag(context, request, run.getId());
+        }
         if (shouldRejectByTrustedAnswer(context)) {
             return completeTrustedAnswerRejected(run, context, false);
         }
@@ -210,10 +218,13 @@ public class ChatService {
         attachSession(request, context);
         RuntimeRunEntity run = createRun(request, context);
         context.setRunId(run.getId());
+        recordIntentRouteStep(run.getId(), request.getInput(), context.getIntentRoutePlan());
         runtimeEventStreamService.bind(emitter, run.getId());
         emitter.onTimeout(() -> runtimeControlService.cancel(run.getId()));
         enrichContextWithMemory(context, request);
-        enrichContextWithRag(context, request, run.getId());
+        if (shouldRetrieveKnowledge(context)) {
+            enrichContextWithRag(context, request, run.getId());
+        }
         if (shouldRejectByTrustedAnswer(context)) {
             completeStreamTrustedAnswerRejected(emitter, run, context);
             return emitter;
@@ -228,15 +239,7 @@ public class ChatService {
             try {
                 // SSE 真正调用模型在异步线程执行，需要恢复登录上下文，避免 Memory 自动沉淀等后置动作误判未登录。
                 SecurityContextHolder.getContext().setAuthentication(authentication);
-                sendSse(emitter, "meta", Map.of(
-                        "runId", run.getId(),
-                        "sessionId", safeText(context.getSessionId()),
-                        "providerName", context.getProvider().getProviderName(),
-                        "modelName", context.getModel().getModelName(),
-                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources(),
-                        "trustedAnswer", trustedAnswerPayload(context)
-                ));
+                sendSse(emitter, "meta", buildStreamMeta(run, context, false));
                 long streamStartedAt = System.nanoTime();
                 AtomicLong firstTokenLatencyMs = new AtomicLong(0L);
                 LlmCallResult result = invokeWithGatewayFallback(context,
@@ -256,18 +259,7 @@ public class ChatService {
                         current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
                 result.setFirstTokenLatencyMs((int) Math.min(Integer.MAX_VALUE, firstTokenLatencyMs.get()));
                 finishSuccess(run, step, context, result, true);
-                sendSse(emitter, "done", Map.of(
-                        "runId", run.getId(),
-                        "sessionId", safeText(context.getSessionId()),
-                        "status", "SUCCESS",
-                        "latencyMs", nullToZero(result.getLatencyMs()),
-                        "promptTokens", nullToZero(result.getPromptTokens()),
-                        "completionTokens", nullToZero(result.getCompletionTokens()),
-                        "totalTokens", nullToZero(result.getTotalTokens()),
-                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources(),
-                        "trustedAnswer", trustedAnswerPayload(context)
-                ));
+                sendDone(emitter, run, context, result, List.of());
                 emitter.complete();
             } catch (Exception exception) {
                 finishFailure(run, step, context, exception, true);
@@ -306,151 +298,61 @@ public class ChatService {
         context.setMessages(buildMessages(agent, request, promptCompileResult));
         context.setSources(List.of());
         List<ToolDefinitionForModel> agentTools = toolService.listModelToolsForAgent(agent);
-        context.setTools(filterToolsForInput(agentTools, request.getInput()));
-        context.setMessages(injectToolRoutingPrompt(context.getMessages(), agentTools, request.getInput()));
+        boolean ragAvailable = agent != null && knowledgeBaseService.hasEnabledKnowledgeBindings(agent.getId());
+        IntentRoutePlan routePlan = intentRoutingPolicy.plan(request.getInput(), agentTools, ragAvailable);
+        context.setIntentRoutePlan(routePlan);
+        context.setTools(selectPlannedTools(agentTools, routePlan));
+        context.setMessages(injectIntentRoutePrompt(context.getMessages(), routePlan));
         return context;
     }
 
     /**
-     * 根据用户输入过滤本轮可暴露给模型的工具。
-     *
-     * <p>模型看到工具后会倾向于主动调用，因此这里先做轻量意图门控。订单查询类工具必须识别到真实订单号，
-     * 并且本轮问题属于物流、订单状态、发货、签收等实时业务查询时才暴露；产品、优惠券、活动、价格政策等
-     * 知识咨询优先走 RAG 和普通模型回答。</p>
+     * 根据结构化计划选择本轮允许暴露给模型的工具。
      *
      * @param tools Agent 已绑定且启用的工具
-     * @param input 用户本轮输入
+     * @param routePlan 结构化意图计划
      * @return 过滤后的工具列表
      */
-    private List<ToolDefinitionForModel> filterToolsForInput(List<ToolDefinitionForModel> tools, String input) {
-        if (tools == null || tools.isEmpty()) {
+    private List<ToolDefinitionForModel> selectPlannedTools(List<ToolDefinitionForModel> tools, IntentRoutePlan routePlan) {
+        if (tools == null || tools.isEmpty() || routePlan == null || !routePlan.isNeedTool()
+                || routePlan.isNeedsClarification()) {
             return List.of();
         }
-        String normalizedInput = normalizeText(input);
-        boolean orderIntent = hasOrderRuntimeIntent(normalizedInput);
+        List<String> selectedNames = routePlan.getSelectedToolNames();
         return tools.stream()
-                .filter(tool -> !isOrderRuntimeTool(tool) || orderIntent)
-                .map(tool -> strengthenToolDescription(tool, orderIntent))
+                .filter(tool -> selectedNames.contains(tool.getName()))
                 .toList();
     }
 
     /**
-     * 注入工具路由提示，避免历史会话中的工具结果污染本轮知识咨询。
+     * 将通用意图计划注入模型上下文，约束工具与知识来源的职责边界。
      *
      * @param messages 原始消息列表
-     * @param tools Agent 已绑定工具
-     * @param input 用户本轮输入
+     * @param routePlan 结构化意图计划
      * @return 注入提示后的消息列表
      */
-    private List<ChatMessage> injectToolRoutingPrompt(List<ChatMessage> messages, List<ToolDefinitionForModel> tools, String input) {
-        if (messages == null || messages.isEmpty() || tools == null || tools.stream().noneMatch(this::isOrderRuntimeTool)) {
+    private List<ChatMessage> injectIntentRoutePrompt(List<ChatMessage> messages, IntentRoutePlan routePlan) {
+        if (messages == null || messages.isEmpty() || routePlan == null) {
             return messages;
         }
-        String normalizedInput = normalizeText(input);
-        boolean orderIntent = hasOrderRuntimeIntent(normalizedInput);
-        boolean orderQuestionWithoutNo = !orderIntent
-                && containsAny(normalizedInput, "订单", "order", "物流", "快递", "运单", "包裹", "发货", "签收", "配送", "送达");
-        boolean shouldIsolateOrderHistory = !orderIntent;
-        String routingPrompt;
-        if (orderIntent) {
-            routingPrompt = "本轮已识别到订单实时查询意图和订单号，可以在需要时调用订单工具；最终回答必须基于本轮工具结果，不得复用旧工具结果。";
-        } else if (orderQuestionWithoutNo) {
-            routingPrompt = "本轮用户可能在询问订单或物流，但没有提供可识别订单号。订单工具已禁用。请直接请用户补充订单号，不要编造订单状态，也不要提示订单查询失败。";
+        String routingPrompt = "本轮结构化意图路由计划如下：" + toJson(routePlan)
+                + "。只能调用 selectedToolNames 中列出的工具，不得根据历史会话复用旧工具结果。";
+        if (routePlan.isNeedsClarification()) {
+            routingPrompt += "当前缺少工具必填实体，本轮禁止调用工具。可以回答互不依赖的知识问题，"
+                    + "并向用户提出该澄清问题：" + safeText(routePlan.getClarificationQuestion()) + "。";
+        } else if (routePlan.isNeedTool() && routePlan.isNeedRag()) {
+            routingPrompt += "这是多意图请求：实时或外部数据以本轮工具结果为准，制度和说明性结论以本轮知识来源为准，最后合并回答。";
+        } else if (routePlan.isNeedTool()) {
+            routingPrompt += "需要实时或外部数据时调用候选工具，最终回答必须基于本轮工具结果。";
+        } else if (routePlan.isNeedRag()) {
+            routingPrompt += "本轮没有可靠工具候选，请依据本轮知识来源回答，不得声称已调用工具。";
         } else {
-            routingPrompt = "本轮用户问题不是订单实时查询，订单工具已禁用。请不要延续上一轮订单查询失败结果，不要提示使用演示订单号；如果问题是产品、优惠券、活动、价格、会员权益或政策咨询，优先基于知识库回答，资料不足时再追问具体产品名称或品类。";
+            routingPrompt += "本轮属于直接对话，不调用工具和知识库。";
         }
-        List<ChatMessage> routedMessages = messages.stream()
-                .filter(message -> !shouldIsolateOrderHistory || !isOrderFailureHistory(message))
-                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-        int insertIndex = Math.max(1, routedMessages.size() - 1);
+        List<ChatMessage> routedMessages = new ArrayList<>(messages);
+        int insertIndex = Math.max(0, routedMessages.size() - 1);
         routedMessages.add(insertIndex, new ChatMessage("system", routingPrompt));
         return routedMessages;
-    }
-
-    /**
-     * 判断历史消息是否属于订单工具失败上下文。
-     *
-     * <p>当本轮不是订单查询时，这类历史会强烈污染模型，让问候、产品咨询继续围绕订单失败回答。</p>
-     *
-     * @param message 历史消息
-     * @return 是否需要隔离
-     */
-    private boolean isOrderFailureHistory(ChatMessage message) {
-        if (message == null || !"assistant".equals(message.getRole())) {
-            return false;
-        }
-        String content = normalizeText(message.getContent());
-        return containsAny(content,
-                "订单查询", "未匹配到相关订单", "未找到对应订单", "未找到该订单", "参数有误",
-                "oaf-demo-1001", "演示订单号", "非订单号", "查询演示订单");
-    }
-
-    /**
-     * 判断用户本轮是否真的需要订单运行时工具。
-     *
-     * @param normalizedInput 已归一化输入
-     * @return 是否具备订单工具调用意图
-     */
-    private boolean hasOrderRuntimeIntent(String normalizedInput) {
-        if (!StringUtils.hasText(normalizedInput)) {
-            return false;
-        }
-        boolean hasExplicitOrderNo = hasExplicitOrderNo(normalizedInput);
-        boolean hasOrderWord = containsAny(normalizedInput, "订单", "order", "物流", "快递", "运单", "包裹");
-        boolean hasRuntimeAction = containsAny(normalizedInput,
-                "到哪里", "到哪", "状态", "进度", "发货", "发出", "签收", "配送", "送达", "物流", "快递", "运单", "退款", "售后");
-        boolean hasOrderSummaryIntent = containsAny(normalizedInput,
-                "多少订单", "几个订单", "几笔订单", "订单数量", "订单数", "我的订单", "订单列表", "所有订单", "有哪些订单");
-        boolean knowledgeOnlyIntent = containsAny(normalizedInput,
-                "优惠", "优惠券", "优惠卷", "券", "活动", "折扣", "满减", "促销", "会员", "积分", "价格", "套餐");
-        // 订单汇总查询不依赖单个订单号，可以直接走只读订单工具；普通订单状态查询仍要求明确订单号。
-        return ((hasExplicitOrderNo && (hasRuntimeAction || hasOrderWord)) || hasOrderSummaryIntent) && !knowledgeOnlyIntent;
-    }
-
-    /**
-     * 判断输入中是否存在可用于订单工具的真实订单号。
-     *
-     * @param normalizedInput 已归一化输入
-     * @return 是否包含订单号
-     */
-    private boolean hasExplicitOrderNo(String normalizedInput) {
-        return StringUtils.hasText(normalizedInput)
-                && (normalizedInput.matches(".*oaf-demo-[0-9]+.*")
-                || normalizedInput.matches(".*\\b[a-z]{1,8}[-_][0-9]{4,}\\b.*")
-                || normalizedInput.matches(".*\\b[0-9]{8,}\\b.*"));
-    }
-
-    /**
-     * 判断工具是否属于订单实时查询类工具。
-     *
-     * @param tool 模型工具定义
-     * @return 是否订单工具
-     */
-    private boolean isOrderRuntimeTool(ToolDefinitionForModel tool) {
-        String text = normalizeText(safeText(tool.getName()) + " " + safeText(tool.getDescription()));
-        return containsAny(text, "order", "订单", "物流", "快递", "运单");
-    }
-
-    /**
-     * 给工具描述补充边界，减少模型误调用。
-     *
-     * @param tool 原始工具定义
-     * @param orderIntent 本轮是否订单意图
-     * @return 带边界描述的工具定义
-     */
-    private ToolDefinitionForModel strengthenToolDescription(ToolDefinitionForModel tool, boolean orderIntent) {
-        ToolDefinitionForModel copy = new ToolDefinitionForModel();
-        copy.setId(tool.getId());
-        copy.setName(tool.getName());
-        copy.setParameters(tool.getParameters());
-        String description = safeText(tool.getDescription());
-        if (isOrderRuntimeTool(tool)) {
-            description = description + " 当用户明确提供订单号并询问订单状态、物流进度、发货签收等实时订单数据时调用；当用户询问我的订单、订单数量、订单列表、多少订单时也可以调用并返回订单汇总；产品、优惠券、促销活动、价格政策等咨询不要调用本工具。";
-        } else if (!orderIntent) {
-            description = description + " 当前用户问题没有订单实时查询意图，优先按知识库和普通对话回答。";
-        }
-        copy.setDescription(description);
-        return copy;
     }
 
     /**
@@ -521,16 +423,7 @@ public class ChatService {
             SecurityContextHolder.getContext().setAuthentication(authentication);
             RuntimeTraceStepEntity decisionStep = createLlmStep(run, context);
             try {
-                sendSse(emitter, "meta", Map.of(
-                        "runId", run.getId(),
-                        "sessionId", safeText(context.getSessionId()),
-                        "providerName", context.getProvider().getProviderName(),
-                        "modelName", context.getModel().getModelName(),
-                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources(),
-                        "trustedAnswer", trustedAnswerPayload(context),
-                        "tools", context.getTools() == null ? List.of() : context.getTools()
-                ));
+                sendSse(emitter, "meta", buildStreamMeta(run, context, true));
                 LlmCallResult decision = invokeWithGatewayFallback(context,
                         current -> openAiCompatibleClient.completeWithTools(current, request.getTemperature(), effectiveMaxTokens(request, current)),
                         current -> usageCostService.assertWithinQuota(run.getUserId(), run.getAgentId(), current.getProvider(), current.getModel(), current.getMessages(), effectiveMaxTokens(request, current)));
@@ -682,6 +575,45 @@ public class ChatService {
         List<ChatMessage> messages = new ArrayList<>(context.getMessages());
         messages.add(1, new ChatMessage("system", buildRagPrompt(sources, context)));
         context.setMessages(messages);
+    }
+
+    /**
+     * 判断结构化路由计划是否要求执行知识检索。
+     *
+     * @param context 聊天运行上下文
+     * @return 是否进入 RAG 链路
+     */
+    private boolean shouldRetrieveKnowledge(ChatRunContext context) {
+        return context.getIntentRoutePlan() == null || context.getIntentRoutePlan().isNeedRag();
+    }
+
+    /**
+     * 写入通用意图路由 Trace，让运行详情能够解释工具和 RAG 的选择依据。
+     *
+     * @param runId 运行 ID
+     * @param input 用户原始输入
+     * @param routePlan 结构化意图计划
+     */
+    private void recordIntentRouteStep(String runId, String input, IntentRoutePlan routePlan) {
+        if (routePlan == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        RuntimeTraceStepEntity step = new RuntimeTraceStepEntity();
+        step.setId(newId());
+        step.setRunId(runId);
+        step.setStepKey("intent_route");
+        step.setStepName("多意图规划与路由");
+        step.setStepType("ROUTER");
+        step.setStatus("SUCCESS");
+        step.setInputPayload(toJson(Map.of("input", safeText(input))));
+        step.setOutputPayload(toJson(routePlan));
+        step.setTokenUsage("{}");
+        step.setCostAmount(BigDecimal.ZERO);
+        step.setLatencyMs(0);
+        step.setStartedAt(now);
+        step.setFinishedAt(now);
+        runtimeTraceStepMapper.insert(step);
     }
 
     /**
@@ -844,28 +776,11 @@ public class ChatService {
                 // 可信拒答也会写入历史会话，保持登录上下文便于后续扩展审计字段。
                 SecurityContextHolder.getContext().setAuthentication(authentication);
                 ChatCompletionResponse response = completeTrustedAnswerRejected(run, context, true);
-                sendSse(emitter, "meta", Map.of(
-                        "runId", run.getId(),
-                        "sessionId", safeText(context.getSessionId()),
-                        "providerName", context.getProvider().getProviderName(),
-                        "modelName", context.getModel().getModelName(),
-                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources(),
-                        "trustedAnswer", trustedAnswerPayload(context)
-                ));
+                sendSse(emitter, "meta", buildStreamMeta(run, context, false));
                 sendSse(emitter, "delta", Map.of("content", response.getContent()));
-                sendSse(emitter, "done", Map.of(
-                        "runId", run.getId(),
-                        "sessionId", safeText(context.getSessionId()),
-                        "status", "SUCCESS",
-                        "latencyMs", nullToZero(response.getLatencyMs()),
-                        "promptTokens", 0,
-                        "completionTokens", 0,
-                        "totalTokens", 0,
-                        "memories", context.getMemories() == null ? List.of() : context.getMemories(),
-                        "sources", context.getSources() == null ? List.of() : context.getSources(),
-                        "trustedAnswer", trustedAnswerPayload(context)
-                ));
+                LlmCallResult rejectedResult = new LlmCallResult();
+                rejectedResult.setLatencyMs(response.getLatencyMs());
+                sendDone(emitter, run, context, rejectedResult, List.of());
                 emitter.complete();
             } catch (Exception exception) {
                 sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
@@ -1294,6 +1209,7 @@ public class ChatService {
         response.setRejectReason(context.getRagRejectReason());
         response.setConfidenceScore(context.getRagConfidenceScore());
         response.setTrustedAnswer(trustedAnswerPayload(context));
+        response.setIntentRoute(context.getIntentRoutePlan());
         return response;
     }
 
@@ -1346,7 +1262,34 @@ public class ChatService {
         payload.put("sources", context.getSources() == null ? List.of() : context.getSources());
         payload.put("trustedAnswer", trustedAnswerPayload(context));
         payload.put("toolResults", toolResults == null ? List.of() : toolResults);
+        payload.put("intentRoute", context.getIntentRoutePlan());
         sendSse(emitter, "done", payload);
+    }
+
+    /**
+     * 构建统一 SSE 元数据，保证普通聊天、工具聊天和可信拒答字段一致。
+     *
+     * @param run 运行记录
+     * @param context 聊天运行上下文
+     * @param includeTools 是否附带候选工具定义
+     * @return SSE 元数据
+     */
+    private Map<String, Object> buildStreamMeta(RuntimeRunEntity run,
+                                                ChatRunContext context,
+                                                boolean includeTools) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("runId", run.getId());
+        payload.put("sessionId", safeText(context.getSessionId()));
+        payload.put("providerName", context.getProvider().getProviderName());
+        payload.put("modelName", context.getModel().getModelName());
+        payload.put("memories", context.getMemories() == null ? List.of() : context.getMemories());
+        payload.put("sources", context.getSources() == null ? List.of() : context.getSources());
+        payload.put("trustedAnswer", trustedAnswerPayload(context));
+        payload.put("intentRoute", context.getIntentRoutePlan());
+        if (includeTools) {
+            payload.put("tools", context.getTools() == null ? List.of() : context.getTools());
+        }
+        return payload;
     }
 
     /**
@@ -1432,35 +1375,6 @@ public class ChatService {
      */
     private String safeText(String text) {
         return text == null ? "" : text;
-    }
-
-    /**
-     * 文本归一化，便于进行轻量意图判断。
-     *
-     * @param text 原始文本
-     * @return 小写后的非空文本
-     */
-    private String normalizeText(String text) {
-        return safeText(text).trim().toLowerCase(Locale.ROOT);
-    }
-
-    /**
-     * 判断文本是否包含任一关键词。
-     *
-     * @param text 待检查文本
-     * @param keywords 关键词列表
-     * @return 是否命中
-     */
-    private boolean containsAny(String text, String... keywords) {
-        if (!StringUtils.hasText(text)) {
-            return false;
-        }
-        for (String keyword : keywords) {
-            if (text.contains(keyword.toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**

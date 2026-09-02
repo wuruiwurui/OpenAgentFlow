@@ -66,6 +66,9 @@ public class ChatRunContext {
     /** 当前 Agent 可用的工具定义。 */
     private List<ToolDefinitionForModel> tools;
 
+    /** 本轮输入的结构化意图路由计划。 */
+    private IntentRoutePlan intentRoutePlan;
+
     /** 模型网关路由决策。 */
     private ModelRouteDecision routeDecision;
 
@@ -206,6 +209,14 @@ public class ChatRunContext {
 
     public void setTools(List<ToolDefinitionForModel> tools) {
         this.tools = tools;
+    }
+
+    public IntentRoutePlan getIntentRoutePlan() {
+        return intentRoutePlan;
+    }
+
+    public void setIntentRoutePlan(IntentRoutePlan intentRoutePlan) {
+        this.intentRoutePlan = intentRoutePlan;
     }
 
     public ModelRouteDecision getRouteDecision() {

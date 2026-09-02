@@ -1,6 +1,7 @@
 package com.openagentflow.domain.tool;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 工具定义展示摘要。
@@ -48,6 +49,15 @@ public class ToolDefinitionSummary {
 
     /** 响应 JSON Schema。 */
     private String responseSchema;
+
+    /** 工具可处理的意图编码。 */
+    private List<String> intentCodes;
+
+    /** 工具自然语言路由示例。 */
+    private List<String> routingExamples;
+
+    /** 执行工具前必须具备的实体名称。 */
+    private List<String> requiredEntities;
 
     /** 超时毫秒。 */
     private Integer timeoutMs;
@@ -198,6 +208,30 @@ public class ToolDefinitionSummary {
 
     public void setResponseSchema(String responseSchema) {
         this.responseSchema = responseSchema;
+    }
+
+    public List<String> getIntentCodes() {
+        return intentCodes;
+    }
+
+    public void setIntentCodes(List<String> intentCodes) {
+        this.intentCodes = intentCodes;
+    }
+
+    public List<String> getRoutingExamples() {
+        return routingExamples;
+    }
+
+    public void setRoutingExamples(List<String> routingExamples) {
+        this.routingExamples = routingExamples;
+    }
+
+    public List<String> getRequiredEntities() {
+        return requiredEntities;
+    }
+
+    public void setRequiredEntities(List<String> requiredEntities) {
+        this.requiredEntities = requiredEntities;
     }
 
     public Integer getTimeoutMs() {

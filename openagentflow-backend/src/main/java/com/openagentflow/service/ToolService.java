@@ -751,6 +751,9 @@ public class ToolService {
         tool.setName(entity.getToolCode());
         tool.setDescription(entity.getDescription());
         tool.setParameters(parseSchema(entity.getRequestSchema()));
+        tool.setIntentCodes(parseStringList(entity.getIntentCodes()));
+        tool.setRoutingExamples(parseStringList(entity.getRoutingExamples()));
+        tool.setRequiredEntities(parseStringList(entity.getRequiredEntities()));
         return tool;
     }
 
@@ -776,6 +779,9 @@ public class ToolService {
         summary.setHeaders(entity.getHeaders());
         summary.setRequestSchema(entity.getRequestSchema());
         summary.setResponseSchema(entity.getResponseSchema());
+        summary.setIntentCodes(parseStringList(entity.getIntentCodes()));
+        summary.setRoutingExamples(parseStringList(entity.getRoutingExamples()));
+        summary.setRequiredEntities(parseStringList(entity.getRequiredEntities()));
         summary.setTimeoutMs(entity.getTimeoutMs());
         summary.setRetryCount(entity.getRetryCount());
         summary.setRiskLevel(entity.getRiskLevel());
@@ -835,6 +841,9 @@ public class ToolService {
         entity.setHeaders(validJsonOrDefault(request.getHeaders(), "{}"));
         entity.setRequestSchema(validJsonOrDefault(request.getRequestSchema(), "{\"type\":\"object\",\"properties\":{}}"));
         entity.setResponseSchema(validJsonOrDefault(request.getResponseSchema(), "{\"type\":\"object\"}"));
+        entity.setIntentCodes(toJson(normalizeStringList(request.getIntentCodes())));
+        entity.setRoutingExamples(toJson(normalizeStringList(request.getRoutingExamples())));
+        entity.setRequiredEntities(toJson(normalizeStringList(request.getRequiredEntities())));
         entity.setTimeoutMs(request.getTimeoutMs() == null ? 30000 : request.getTimeoutMs());
         entity.setRetryCount(request.getRetryCount() == null ? 0 : request.getRetryCount());
         entity.setRiskLevel(StringUtils.hasText(request.getRiskLevel()) ? request.getRiskLevel() : "low");
@@ -1171,6 +1180,42 @@ public class ToolService {
         } catch (Exception exception) {
             return new LinkedHashMap<>();
         }
+    }
+
+    /**
+     * 将 JSON 数组解析为去空、去重的字符串列表。
+     *
+     * @param json JSON 数组字符串
+     * @return 可安全使用的字符串列表
+     */
+    private List<String> parseStringList(String json) {
+        try {
+            if (!StringUtils.hasText(json)) {
+                return List.of();
+            }
+            List<String> values = objectMapper.readValue(json, new TypeReference<List<String>>() {
+            });
+            return normalizeStringList(values);
+        } catch (Exception exception) {
+            return List.of();
+        }
+    }
+
+    /**
+     * 规范化路由元数据列表，避免空字符串和重复项污染匹配语料。
+     *
+     * @param values 原始字符串列表
+     * @return 保持输入顺序的去重列表
+     */
+    private List<String> normalizeStringList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     /**

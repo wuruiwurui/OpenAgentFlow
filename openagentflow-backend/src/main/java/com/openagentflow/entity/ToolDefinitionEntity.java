@@ -64,6 +64,18 @@ public class ToolDefinitionEntity {
     @TableField("response_schema")
     private String responseSchema;
 
+    /** 工具可处理的意图编码 JSON 数组。 */
+    @TableField("intent_codes")
+    private String intentCodes;
+
+    /** 工具自然语言路由示例 JSON 数组。 */
+    @TableField("routing_examples")
+    private String routingExamples;
+
+    /** 工具执行前必填实体 JSON 数组。 */
+    @TableField("required_entities")
+    private String requiredEntities;
+
     /** 超时毫秒。 */
     @TableField("timeout_ms")
     private Integer timeoutMs;
@@ -226,6 +238,30 @@ public class ToolDefinitionEntity {
 
     public void setResponseSchema(String responseSchema) {
         this.responseSchema = responseSchema;
+    }
+
+    public String getIntentCodes() {
+        return intentCodes;
+    }
+
+    public void setIntentCodes(String intentCodes) {
+        this.intentCodes = intentCodes;
+    }
+
+    public String getRoutingExamples() {
+        return routingExamples;
+    }
+
+    public void setRoutingExamples(String routingExamples) {
+        this.routingExamples = routingExamples;
+    }
+
+    public String getRequiredEntities() {
+        return requiredEntities;
+    }
+
+    public void setRequiredEntities(String requiredEntities) {
+        this.requiredEntities = requiredEntities;
     }
 
     public Integer getTimeoutMs() {
