@@ -17,6 +17,21 @@ export interface ChatCompletionRequest {
   maxTokens?: number;
 }
 
+export interface IntentRoutePlan {
+  intents?: string[];
+  entities?: Record<string, string>;
+  selectedToolNames?: string[];
+  uncoveredIntents?: string[];
+  missingEntities?: string[];
+  needTool?: boolean;
+  needRag?: boolean;
+  directAnswer?: boolean;
+  needsClarification?: boolean;
+  confidence?: number;
+  reason?: string;
+  clarificationQuestion?: string;
+}
+
 export interface ChatCompletionResponse {
   runId: string;
   sessionId?: string;
@@ -33,6 +48,12 @@ export interface ChatCompletionResponse {
   sources?: KnowledgeSource[];
   trustedAnswer?: TrustedAnswerStatus;
   toolResults?: Record<string, unknown>[];
+  intentRoute?: IntentRoutePlan;
+  enhancedQueries?: string[];
+  rerankMode?: string;
+  rerankModelId?: string;
+  rerankLatencyMs?: number;
+  rerankErrorMessage?: string;
 }
 
 export interface TrustedAnswerStatus {

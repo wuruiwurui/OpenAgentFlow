@@ -60,6 +60,24 @@ public class ChatRunContext {
     /** RAG 质量建议。 */
     private String ragQualityAdvice;
 
+    /** RAG 实际使用的增强查询。 */
+    private List<String> ragEnhancedQueries;
+
+    /** RAG 查询理解后的标准查询。 */
+    private String ragCanonicalQuery;
+
+    /** RAG 实际重排模式。 */
+    private String ragRerankMode;
+
+    /** RAG 实际重排模型 ID。 */
+    private String ragRerankModelId;
+
+    /** RAG 真实重排耗时毫秒。 */
+    private Integer ragRerankLatencyMs;
+
+    /** RAG 重排失败后的规则降级原因。 */
+    private String ragRerankErrorMessage;
+
     /** 本次 Memory 召回命中的记忆列表。 */
     private List<MemoryDtos.RecallItem> memories;
 
@@ -193,6 +211,54 @@ public class ChatRunContext {
 
     public void setRagQualityAdvice(String ragQualityAdvice) {
         this.ragQualityAdvice = ragQualityAdvice;
+    }
+
+    public List<String> getRagEnhancedQueries() {
+        return ragEnhancedQueries;
+    }
+
+    public void setRagEnhancedQueries(List<String> ragEnhancedQueries) {
+        this.ragEnhancedQueries = ragEnhancedQueries;
+    }
+
+    public String getRagCanonicalQuery() {
+        return ragCanonicalQuery;
+    }
+
+    public void setRagCanonicalQuery(String ragCanonicalQuery) {
+        this.ragCanonicalQuery = ragCanonicalQuery;
+    }
+
+    public String getRagRerankMode() {
+        return ragRerankMode;
+    }
+
+    public void setRagRerankMode(String ragRerankMode) {
+        this.ragRerankMode = ragRerankMode;
+    }
+
+    public String getRagRerankModelId() {
+        return ragRerankModelId;
+    }
+
+    public void setRagRerankModelId(String ragRerankModelId) {
+        this.ragRerankModelId = ragRerankModelId;
+    }
+
+    public Integer getRagRerankLatencyMs() {
+        return ragRerankLatencyMs;
+    }
+
+    public void setRagRerankLatencyMs(Integer ragRerankLatencyMs) {
+        this.ragRerankLatencyMs = ragRerankLatencyMs;
+    }
+
+    public String getRagRerankErrorMessage() {
+        return ragRerankErrorMessage;
+    }
+
+    public void setRagRerankErrorMessage(String ragRerankErrorMessage) {
+        this.ragRerankErrorMessage = ragRerankErrorMessage;
     }
 
     public List<MemoryDtos.RecallItem> getMemories() {

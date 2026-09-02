@@ -75,11 +75,18 @@ public class IntentRoutingPolicy {
         List<String> clauses = splitClauses(input);
         List<ToolScore> matches = scoreTools(clauses, tools);
         double bestScore = matches.isEmpty() ? 0D : matches.getFirst().score();
-        List<ToolDefinitionForModel> selectedTools = matches.stream()
+        List<ToolDefinitionForModel> candidateTools = matches.stream()
                 .filter(match -> match.score() >= TOOL_MATCH_THRESHOLD)
                 .filter(match -> bestScore - match.score() <= TOOL_SCORE_GAP)
                 .map(ToolScore::tool)
                 .toList();
+
+        // 多个工具都命中时，先用输入中已抽取的实体淘汰无法执行的候选，避免把明细工具的必填参数错误施加到汇总工具。
+        Map<String, String> candidateEntities = extractEntities(input, candidateTools);
+        List<ToolDefinitionForModel> readyTools = candidateTools.stream()
+                .filter(tool -> findMissingEntities(List.of(tool), candidateEntities).isEmpty())
+                .toList();
+        List<ToolDefinitionForModel> selectedTools = readyTools.isEmpty() ? candidateTools : readyTools;
 
         LinkedHashSet<String> selectedNames = new LinkedHashSet<>();
         LinkedHashSet<String> intents = new LinkedHashSet<>();
@@ -104,7 +111,7 @@ public class IntentRoutingPolicy {
         plan.setDirectAnswer(selectedTools.isEmpty() && !ragAvailable);
         plan.setConfidence(Math.min(1D, bestScore));
 
-        Map<String, String> entities = extractEntities(input, selectedTools);
+        Map<String, String> entities = readyTools.isEmpty() ? candidateEntities : extractEntities(input, selectedTools);
         List<String> missingEntities = findMissingEntities(selectedTools, entities);
         plan.setEntities(entities);
         plan.setMissingEntities(missingEntities);

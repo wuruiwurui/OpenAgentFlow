@@ -74,6 +74,12 @@ Redis: cache, sessions, queue state
 - `V048__solution_template_marketplace_p74.sql`: enterprise solution template publishing, immutable versions, review governance, asynchronous installation mapping, three-way upgrades, ratings, comments, favorites, reports, permissions, and public seed packages.
 - `V049__solution_template_seed_contract_fix.sql`: compatibility statement repair for the first public solution template versions.
 - `V050__template_report_pending_guard_p74.sql`: pending report uniqueness guard that preserves handled report history.
+- `V051__p0_complete_builtin_solution_packages.sql`: complete built-in solution package resources.
+- `V052__p1_notification_center.sql`: notification center delivery and preference support.
+- `V053__permission_governance_enhancement.sql`: permission governance and route/action authorization support.
+- `V054__workspace_governance_permissions.sql`: workspace governance permission support.
+- `V055__least_privilege_workspace_role_fix.sql`: least-privilege workspace role corrections.
+- `V056__tool_intent_routing_metadata.sql`: generic tool intent codes, routing examples, and required entity metadata.
 
 Recommended execution order:
 
@@ -128,6 +134,12 @@ V047__prompt_version_schema_contract_p73.sql
 V048__solution_template_marketplace_p74.sql
 V049__solution_template_seed_contract_fix.sql
 V050__template_report_pending_guard_p74.sql
+V051__p0_complete_builtin_solution_packages.sql
+V052__p1_notification_center.sql
+V053__permission_governance_enhancement.sql
+V054__workspace_governance_permissions.sql
+V055__least_privilege_workspace_role_fix.sql
+V056__tool_intent_routing_metadata.sql
 ```
 
 Coverage matches the PostgreSQL version at the feature level:
@@ -334,3 +346,17 @@ Knowledge and memory rows point to Milvus through:
 - 首批内置企业客服、知识问答、数据分析和智能运维公开解决方案模板。
 
 所有新增表与字段均包含中文注释。
+
+## P77/P78 智能路由与 RAG 增强
+
+`V056__tool_intent_routing_metadata.sql` 为 `tool_definition` 增加通用路由元数据：
+
+- `intent_codes` 保存工具可处理的意图编码 JSON 数组。
+- `routing_examples` 保存自然语言路由示例 JSON 数组。
+- `required_entities` 保存调用前必须抽取的实体名称 JSON 数组。
+
+后端根据工具元数据和请求参数 Schema 生成结构化多意图路由计划，决定工具、知识库或直接回答；仅缺少工具必填实体且没有独立知识意图时，由 Runtime 直接返回澄清响应，避免模型自由发挥或误执行工具。缺失实体和路由原因写入 Trace 与 SSE。查询改写、多查询融合和重排参数存储在现有检索日志的 `milvus_search_params` JSON 中，不新增表结构。
+
+知识库可通过保存接口的 `rerankModelId` 配置 Cross-Encoder 模型。未配置时使用规则重排；已配置但上游 `/rerank` 调用失败时返回 `rule_fallback` 和错误原因，主检索链路继续可用。
+
+RAG Trace、普通聊天响应和 SSE 事件都会记录原始查询、规范查询、实际增强查询、会话指代消解状态、重排模型、重排耗时和降级原因，调试台会直接展示规则降级原因，便于定位召回质量问题。

@@ -188,6 +188,9 @@ public class ChatService {
         if (shouldRejectByTrustedAnswer(context)) {
             return completeTrustedAnswerRejected(run, context, false);
         }
+        if (shouldClarifyRoute(context)) {
+            return completeClarification(run, context, false);
+        }
         if (context.getTools() != null && !context.getTools().isEmpty()) {
             return completeWithToolCalling(request, context, run);
         }
@@ -227,6 +230,10 @@ public class ChatService {
         }
         if (shouldRejectByTrustedAnswer(context)) {
             completeStreamTrustedAnswerRejected(emitter, run, context);
+            return emitter;
+        }
+        if (shouldClarifyRoute(context)) {
+            completeStreamClarification(emitter, run, context);
             return emitter;
         }
         if (context.getTools() != null && !context.getTools().isEmpty()) {
@@ -544,7 +551,8 @@ public class ChatService {
         RuntimeTraceStepEntity ragStep = createRagStep(runId, request);
         RagRetrievalOutcome outcome;
         try {
-            outcome = knowledgeBaseService.retrieveForAgentWithPolicy(context.getAgent(), request.getInput(), runId);
+            outcome = knowledgeBaseService.retrieveForAgentWithPolicy(
+                    context.getAgent(), request.getInput(), runId, recentConversationContext(context));
             finishRagStep(ragStep, outcome, null);
         } catch (Exception exception) {
             finishRagStep(ragStep, null, exception);
@@ -561,6 +569,12 @@ public class ChatService {
         context.setRagMinCitationCount(outcome.getMinCitationCount());
         context.setRagCitationRequired(Boolean.TRUE.equals(outcome.getCitationRequired()));
         context.setRagQualityAdvice(outcome.getQualityAdvice());
+        context.setRagEnhancedQueries(outcome.getEnhancedQueries());
+        context.setRagCanonicalQuery(outcome.getCanonicalQuery());
+        context.setRagRerankMode(outcome.getRerankMode());
+        context.setRagRerankModelId(outcome.getRerankModelId());
+        context.setRagRerankLatencyMs(outcome.getRerankLatencyMs());
+        context.setRagRerankErrorMessage(outcome.getRerankErrorMessage());
         if (shouldRejectByTrustedAnswer(context)) {
             return;
         }
@@ -649,18 +663,29 @@ public class ChatService {
     private void finishRagStep(RuntimeTraceStepEntity step, RagRetrievalOutcome outcome, Exception exception) {
         List<KnowledgeSource> sources = outcome == null || outcome.getSources() == null ? List.of() : outcome.getSources();
         step.setStatus(exception == null ? "SUCCESS" : "FAILED");
-        step.setOutputPayload(toJson(Map.of(
-                "sources", sources,
-                "trustedAnswer", outcome == null ? Map.of() : Map.of(
-                        "enabled", Boolean.TRUE.equals(outcome.getTrustedAnswerMode()),
-                        "answerable", outcome.getAnswerable() == null || Boolean.TRUE.equals(outcome.getAnswerable()),
-                        "citationRequired", Boolean.TRUE.equals(outcome.getCitationRequired()),
-                        "minCitationCount", outcome.getMinCitationCount() == null ? 0 : outcome.getMinCitationCount(),
-                        "confidenceScore", outcome.getConfidenceScore() == null ? 0D : outcome.getConfidenceScore(),
-                        "rejectReason", safeText(outcome.getRejectReason()),
-                        "qualityAdvice", safeText(outcome.getQualityAdvice())
-                )
-        )));
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("sources", sources);
+        output.put("trustedAnswer", outcome == null ? Map.of() : Map.of(
+                "enabled", Boolean.TRUE.equals(outcome.getTrustedAnswerMode()),
+                "answerable", outcome.getAnswerable() == null || Boolean.TRUE.equals(outcome.getAnswerable()),
+                "citationRequired", Boolean.TRUE.equals(outcome.getCitationRequired()),
+                "minCitationCount", outcome.getMinCitationCount() == null ? 0 : outcome.getMinCitationCount(),
+                "confidenceScore", outcome.getConfidenceScore() == null ? 0D : outcome.getConfidenceScore(),
+                "rejectReason", safeText(outcome.getRejectReason()),
+                "qualityAdvice", safeText(outcome.getQualityAdvice())
+        ));
+        if (outcome != null) {
+            // Trace同时记录查询理解和重排状态，方便定位“为什么没有召回”。
+            output.put("originalQuery", safeText(outcome.getOriginalQuery()));
+            output.put("canonicalQuery", safeText(outcome.getCanonicalQuery()));
+            output.put("enhancedQueries", outcome.getEnhancedQueries() == null ? List.of() : outcome.getEnhancedQueries());
+            output.put("contextResolved", Boolean.TRUE.equals(outcome.getContextResolved()));
+            output.put("rerankMode", safeText(outcome.getRerankMode()));
+            output.put("rerankModelId", safeText(outcome.getRerankModelId()));
+            output.put("rerankLatencyMs", outcome.getRerankLatencyMs() == null ? 0 : outcome.getRerankLatencyMs());
+            output.put("rerankErrorMessage", safeText(outcome.getRerankErrorMessage()));
+        }
+        step.setOutputPayload(toJson(output));
         step.setLatencyMs((int) java.time.Duration.between(step.getStartedAt(), LocalDateTime.now()).toMillis());
         step.setErrorMessage(exception == null ? null : exception.getMessage());
         step.setFinishedAt(LocalDateTime.now());
@@ -706,6 +731,109 @@ public class ChatService {
         return context != null
                 && Boolean.TRUE.equals(context.getRagTrustedAnswerMode())
                 && Boolean.FALSE.equals(context.getRagAnswerable());
+    }
+
+    /**
+     * 判断是否需要由路由器直接澄清，而不是把不完整请求交给模型自由发挥。
+     * <p>如果同一请求还有独立的知识咨询意图，仍允许模型回答知识部分并带出澄清问题。</p>
+     *
+     * @param context 聊天运行上下文
+     * @return 是否直接返回澄清响应
+     */
+    private boolean shouldClarifyRoute(ChatRunContext context) {
+        return context != null
+                && context.getIntentRoutePlan() != null
+                && context.getIntentRoutePlan().isNeedsClarification()
+                && !context.getIntentRoutePlan().isNeedRag();
+    }
+
+    /**
+     * 构造必填实体澄清文本。
+     *
+     * @param context 聊天运行上下文
+     * @return 澄清内容
+     */
+    private String clarificationContent(ChatRunContext context) {
+        String question = context == null || context.getIntentRoutePlan() == null
+                ? "请补充执行该操作所需的信息。"
+                : safeText(context.getIntentRoutePlan().getClarificationQuestion());
+        return StringUtils.hasText(question) ? question : "请补充执行该操作所需的信息。";
+    }
+
+    /**
+     * 保存确定性的路由澄清结果。
+     * <p>该响应不调用 LLM，因此不会产生虚假 Token 和工具执行记录。</p>
+     *
+     * @param run 运行记录
+     * @param context 聊天运行上下文
+     * @param stream 是否流式
+     * @return 澄清响应
+     */
+    private ChatCompletionResponse completeClarification(RuntimeRunEntity run,
+                                                          ChatRunContext context,
+                                                          boolean stream) {
+        String content = clarificationContent(context);
+        LocalDateTime finishedAt = LocalDateTime.now();
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("content", content);
+        output.put("intentRoute", context.getIntentRoutePlan());
+        output.put("clarificationRequired", true);
+        run.setOutputText(content);
+        run.setOutputPayload(toJson(output));
+        run.setStatus("SUCCESS");
+        run.setPromptTokens(0);
+        run.setCompletionTokens(0);
+        run.setTotalTokens(0);
+        run.setTotalCost(BigDecimal.ZERO);
+        run.setLatencyMs((int) java.time.Duration.between(run.getStartedAt(), finishedAt).toMillis());
+        run.setFinishedAt(finishedAt);
+        runtimeRunMapper.updateById(run);
+        agentSessionService.appendAssistantMessage(context.getSessionId(), content, 0, Map.of(
+                "runId", run.getId(),
+                "status", "SUCCESS",
+                "stream", stream,
+                "clarificationRequired", true,
+                "missingEntities", context.getIntentRoutePlan().getMissingEntities()
+        ));
+        LlmCallResult result = new LlmCallResult();
+        result.setContent(content);
+        result.setLatencyMs(run.getLatencyMs());
+        result.setPromptTokens(0);
+        result.setCompletionTokens(0);
+        result.setTotalTokens(0);
+        return toResponse(run, context, result, "SUCCESS", null);
+    }
+
+    /**
+     * 以 SSE 形式输出确定性的路由澄清结果。
+     *
+     * @param emitter SSE 发射器
+     * @param run 运行记录
+     * @param context 聊天运行上下文
+     */
+    private void completeStreamClarification(SseEmitter emitter,
+                                              RuntimeRunEntity run,
+                                              ChatRunContext context) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 异步线程恢复认证上下文，保证澄清消息仍按当前用户写入历史会话。
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+                ChatCompletionResponse response = completeClarification(run, context, true);
+                sendSse(emitter, "meta", buildStreamMeta(run, context, false));
+                sendSse(emitter, "delta", Map.of("content", response.getContent()));
+                LlmCallResult clarificationResult = new LlmCallResult();
+                clarificationResult.setLatencyMs(response.getLatencyMs());
+                sendDone(emitter, run, context, clarificationResult, List.of());
+                emitter.complete();
+            } catch (Exception exception) {
+                sendSse(emitter, "error", Map.of("message", safeText(exception.getMessage())));
+                emitter.complete();
+            } finally {
+                // 清理线程上下文，避免线程池复用时串到其他用户。
+                SecurityContextHolder.clearContext();
+            }
+        }, agentRuntimeExecutor);
     }
 
     /**
@@ -1210,6 +1338,11 @@ public class ChatService {
         response.setConfidenceScore(context.getRagConfidenceScore());
         response.setTrustedAnswer(trustedAnswerPayload(context));
         response.setIntentRoute(context.getIntentRoutePlan());
+        response.setEnhancedQueries(context.getRagEnhancedQueries());
+        response.setRerankMode(context.getRagRerankMode());
+        response.setRerankModelId(context.getRagRerankModelId());
+        response.setRerankLatencyMs(context.getRagRerankLatencyMs());
+        response.setRerankErrorMessage(context.getRagRerankErrorMessage());
         return response;
     }
 
@@ -1263,6 +1396,11 @@ public class ChatService {
         payload.put("trustedAnswer", trustedAnswerPayload(context));
         payload.put("toolResults", toolResults == null ? List.of() : toolResults);
         payload.put("intentRoute", context.getIntentRoutePlan());
+        payload.put("enhancedQueries", context.getRagEnhancedQueries() == null ? List.of() : context.getRagEnhancedQueries());
+        payload.put("rerankMode", safeText(context.getRagRerankMode()));
+        payload.put("rerankModelId", safeText(context.getRagRerankModelId()));
+        payload.put("rerankLatencyMs", context.getRagRerankLatencyMs() == null ? 0 : context.getRagRerankLatencyMs());
+        payload.put("rerankErrorMessage", safeText(context.getRagRerankErrorMessage()));
         sendSse(emitter, "done", payload);
     }
 
@@ -1286,6 +1424,11 @@ public class ChatService {
         payload.put("sources", context.getSources() == null ? List.of() : context.getSources());
         payload.put("trustedAnswer", trustedAnswerPayload(context));
         payload.put("intentRoute", context.getIntentRoutePlan());
+        payload.put("enhancedQueries", context.getRagEnhancedQueries() == null ? List.of() : context.getRagEnhancedQueries());
+        payload.put("rerankMode", safeText(context.getRagRerankMode()));
+        payload.put("rerankModelId", safeText(context.getRagRerankModelId()));
+        payload.put("rerankLatencyMs", context.getRagRerankLatencyMs() == null ? 0 : context.getRagRerankLatencyMs());
+        payload.put("rerankErrorMessage", safeText(context.getRagRerankErrorMessage()));
         if (includeTools) {
             payload.put("tools", context.getTools() == null ? List.of() : context.getTools());
         }
@@ -1323,6 +1466,31 @@ public class ChatService {
             }
         }
         return "";
+    }
+
+    /**
+     * 提取当前问题之前的最近用户和助手消息，供 RAG 查询指代消解使用。
+     *
+     * @param context 聊天运行上下文
+     * @return 有界会话上下文
+     */
+    private String recentConversationContext(ChatRunContext context) {
+        if (context == null || context.getMessages() == null || context.getMessages().size() < 2) {
+            return "";
+        }
+        List<String> history = new ArrayList<>();
+        int currentUserIndex = context.getMessages().size() - 1;
+        for (int index = currentUserIndex - 1; index >= 0 && history.size() < 4; index--) {
+            ChatMessage message = context.getMessages().get(index);
+            if (message == null || (!"user".equals(message.getRole()) && !"assistant".equals(message.getRole()))) {
+                continue;
+            }
+            if (StringUtils.hasText(message.getContent())) {
+                history.add(message.getRole() + "：" + message.getContent());
+            }
+        }
+        java.util.Collections.reverse(history);
+        return String.join("\n", history);
     }
 
     /**

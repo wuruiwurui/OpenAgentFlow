@@ -824,6 +824,10 @@ a {
   margin: 4px 0 0;
 }
 
+.compact-textarea {
+  min-height: 72px;
+}
+
 .filter-row {
   display: flex;
   align-items: center;

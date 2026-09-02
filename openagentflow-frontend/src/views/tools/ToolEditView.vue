@@ -43,6 +43,9 @@ const form = reactive({
   headers: '{}',
   requestSchema: '{\n  "type": "object",\n  "properties": {},\n  "required": []\n}',
   responseSchema: '{\n  "type": "object"\n}',
+  intentCodesText: '',
+  routingExamplesText: '',
+  requiredEntitiesText: '',
   timeoutMs: 30000,
   retryCount: 0,
   riskLevel: 'low',
@@ -113,6 +116,9 @@ async function loadTool() {
     form.headers = detail.headers || '{}';
     form.requestSchema = detail.requestSchema || form.requestSchema;
     form.responseSchema = detail.responseSchema || form.responseSchema;
+    form.intentCodesText = (detail.intentCodes || []).join('\n');
+    form.routingExamplesText = (detail.routingExamples || []).join('\n');
+    form.requiredEntitiesText = (detail.requiredEntities || []).join('\n');
     form.timeoutMs = detail.timeoutMs || 30000;
     form.retryCount = detail.retryCount || 0;
     form.riskLevel = detail.riskLevel || 'low';
@@ -186,6 +192,9 @@ function toRequest(enabled: boolean): ToolDefinitionRequest {
     headers: normalizedJson(form.headers, '{}'),
     requestSchema: normalizedJson(form.requestSchema, '{"type":"object","properties":{}}'),
     responseSchema: normalizedJson(form.responseSchema, '{"type":"object"}'),
+    intentCodes: parseLines(form.intentCodesText),
+    routingExamples: parseLines(form.routingExamplesText),
+    requiredEntities: parseLines(form.requiredEntitiesText),
     timeoutMs: Number(form.timeoutMs),
     retryCount: Number(form.retryCount),
     riskLevel: form.riskLevel,
@@ -248,6 +257,13 @@ function normalizedJson(text: string, fallback: string) {
     return fallback;
   }
 }
+
+function parseLines(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 </script>
 
 <template>
@@ -267,6 +283,9 @@ function normalizedJson(text: string, fallback: string) {
         <label>需要确认<select v-model="form.requireConfirm"><option :value="false">否</option><option :value="true">是</option></select></label>
         <label>状态<select v-model="form.enabled"><option :value="true">启用</option><option :value="false">停用</option></select></label>
         <label class="wide">描述<textarea v-model="form.description" placeholder="描述越清晰，模型越容易正确选择工具" /></label>
+        <label class="wide">意图编码（每行一个）<textarea v-model="form.intentCodesText" class="compact-textarea" placeholder="order.query\norder.refund" /></label>
+        <label class="wide">路由示例（每行一个）<textarea v-model="form.routingExamplesText" class="compact-textarea" placeholder="查询订单物流\n客户要退款" /></label>
+        <label class="wide">必填实体（每行一个）<textarea v-model="form.requiredEntitiesText" class="compact-textarea" placeholder="orderId" /></label>
       </div>
     </div>
 

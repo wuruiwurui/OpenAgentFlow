@@ -92,6 +92,9 @@ const knowledgePolicy = reactive<Required<AgentKnowledgeBindingOptions>>({
   trustedAnswerMode: true,
   citationRequired: true,
   minCitationCount: 1,
+  queryRewriteEnabled: true,
+  multiQueryEnabled: true,
+  maxQueryVariants: 4,
 });
 
 const isNew = computed(() => route.params.id === 'new');

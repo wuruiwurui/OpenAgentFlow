@@ -60,6 +60,9 @@ const retrievalForm = reactive<KnowledgeRetrievalOptions>({
   metadataKeyword: '',
   lowConfidenceThreshold: 0.62,
   rejectLowConfidence: true,
+  queryRewriteEnabled: true,
+  multiQueryEnabled: true,
+  maxQueryVariants: 4,
 });
 
 const documents = computed(() => detail.value?.documents ?? []);
@@ -265,6 +268,15 @@ function searchModeLabel(value?: string) {
   return '混合检索';
 }
 
+function rerankModeLabel(value?: string) {
+  if (value === 'cross_encoder') return '真实 Cross-Encoder 重排';
+  if (value === 'rule') return '规则重排';
+  if (value === 'rule_fallback') return '规则降级重排';
+  if (value === 'disabled') return '未启用重排';
+  if (value === 'cache') return '缓存结果';
+  return value || '未执行';
+}
+
 function sourceQuoteHtml(source: KnowledgeSource) {
   return source.highlightedQuoteText || escapeHtml(source.quoteText || '');
 }
@@ -399,6 +411,9 @@ function escapeHtml(value: string) {
           <label class="inline-field">页码<input v-model.number="retrievalForm.pageNo" type="number" min="1" placeholder="不限" /></label>
           <label class="inline-field wide">元数据<input v-model.trim="retrievalForm.metadataKeyword" placeholder="来源/标签" /></label>
           <label class="checkbox-line"><input v-model="retrievalForm.rerankEnabled" type="checkbox" /> 重排</label>
+          <label class="checkbox-line"><input v-model="retrievalForm.queryRewriteEnabled" type="checkbox" /> 查询改写</label>
+          <label class="checkbox-line"><input v-model="retrievalForm.multiQueryEnabled" type="checkbox" /> 多查询融合</label>
+          <label class="inline-field">变体数<input v-model.number="retrievalForm.maxQueryVariants" type="number" min="1" max="8" /></label>
           <label class="checkbox-line"><input v-model="retrievalForm.rejectLowConfidence" type="checkbox" /> 低置信拒答</label>
           <button class="primary-button" type="button" @click="handleRetrievalTest"><Search :size="16" /> 检索测试</button>
         </div>
@@ -410,8 +425,11 @@ function escapeHtml(value: string) {
             候选：{{ retrievalQuality.candidateCount || 0 }}；
             返回：{{ retrievalQuality.resultCount || sources.length }}；
             最佳置信：{{ scoreText(retrievalQuality.confidenceScore) }}；
-            阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}。
+            阈值：{{ scoreText(retrievalQuality.scoreThreshold) }} / 低置信 {{ scoreText(retrievalQuality.lowConfidenceThreshold) }}；
+            重排：{{ rerankModeLabel(retrievalQuality.rerankMode) }}（{{ retrievalQuality.rerankLatencyMs || 0 }}ms）。
           </p>
+          <p v-if="retrievalQuality.enhancedQueries?.length">增强查询：{{ retrievalQuality.enhancedQueries.join(' / ') }}</p>
+          <p v-if="retrievalQuality.rerankErrorMessage">重排降级原因：{{ retrievalQuality.rerankErrorMessage }}</p>
           <p v-if="retrievalQuality.rejectReason">{{ retrievalQuality.rejectReason }}</p>
           <p v-if="retrievalQuality.qualityAdvice">{{ retrievalQuality.qualityAdvice }}</p>
         </div>

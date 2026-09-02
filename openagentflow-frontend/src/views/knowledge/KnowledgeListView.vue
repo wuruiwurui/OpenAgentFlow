@@ -100,6 +100,7 @@ async function handleCreate() {
           <th>文档数</th>
           <th>切片数</th>
           <th>向量模型</th>
+          <th>重排模型</th>
           <th>Milvus 集合</th>
           <th>状态</th>
         </tr>
@@ -111,6 +112,7 @@ async function handleCreate() {
           <td>{{ kb.documentCount }}</td>
           <td>{{ kb.chunkCount.toLocaleString() }}</td>
           <td>{{ kb.embeddingModelName || kb.embeddingModelId || '-' }}</td>
+          <td class="mono" :title="kb.rerankModelId || '未配置，使用规则重排'">{{ kb.rerankModelId || '规则重排' }}</td>
           <td class="mono">{{ kb.milvusCollectionName || '-' }}</td>
           <td><StatusBadge :label="kb.status === 'active' ? '启用' : kb.status" /></td>
         </tr>

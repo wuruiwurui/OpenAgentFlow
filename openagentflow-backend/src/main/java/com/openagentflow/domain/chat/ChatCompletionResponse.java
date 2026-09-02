@@ -71,6 +71,21 @@ public class ChatCompletionResponse {
     /** 本轮输入的结构化意图路由计划。 */
     private IntentRoutePlan intentRoute;
 
+    /** RAG 实际使用的增强查询列表。 */
+    private List<String> enhancedQueries;
+
+    /** RAG 实际重排模式。 */
+    private String rerankMode;
+
+    /** 实际使用的重排模型配置 ID。 */
+    private String rerankModelId;
+
+    /** 实际重排耗时毫秒。 */
+    private Integer rerankLatencyMs;
+
+    /** 重排失败后的规则降级原因。 */
+    private String rerankErrorMessage;
+
     public String getRunId() {
         return runId;
     }
@@ -229,5 +244,45 @@ public class ChatCompletionResponse {
 
     public void setIntentRoute(IntentRoutePlan intentRoute) {
         this.intentRoute = intentRoute;
+    }
+
+    public List<String> getEnhancedQueries() {
+        return enhancedQueries;
+    }
+
+    public void setEnhancedQueries(List<String> enhancedQueries) {
+        this.enhancedQueries = enhancedQueries;
+    }
+
+    public String getRerankMode() {
+        return rerankMode;
+    }
+
+    public void setRerankMode(String rerankMode) {
+        this.rerankMode = rerankMode;
+    }
+
+    public String getRerankModelId() {
+        return rerankModelId;
+    }
+
+    public void setRerankModelId(String rerankModelId) {
+        this.rerankModelId = rerankModelId;
+    }
+
+    public Integer getRerankLatencyMs() {
+        return rerankLatencyMs;
+    }
+
+    public void setRerankLatencyMs(Integer rerankLatencyMs) {
+        this.rerankLatencyMs = rerankLatencyMs;
+    }
+
+    public String getRerankErrorMessage() {
+        return rerankErrorMessage;
+    }
+
+    public void setRerankErrorMessage(String rerankErrorMessage) {
+        this.rerankErrorMessage = rerankErrorMessage;
     }
 }

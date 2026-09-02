@@ -204,3 +204,8 @@ openagentflow:
     allow-local-embedding-fallback: ${OAF_ALLOW_LOCAL_EMBEDDING_FALLBACK:true}
     # 生产环境保持关闭，避免 Milvus 故障时扫描 MySQL embedding_json 放大数据库压力。
     allow-mysql-vector-fallback: ${OAF_ALLOW_MYSQL_VECTOR_FALLBACK:false}
+    # P78：查询理解默认开启，最多执行 4 个去重查询变体。
+    query-rewrite-enabled: ${OAF_RAG_QUERY_REWRITE_ENABLED:true}
+    multi-query-enabled: ${OAF_RAG_MULTI_QUERY_ENABLED:true}
+    max-query-variants: ${OAF_RAG_MAX_QUERY_VARIANTS:4}
+    rerank-candidate-limit: ${OAF_RAG_RERANK_CANDIDATE_LIMIT:30}

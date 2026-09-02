@@ -12,12 +12,14 @@ import com.openagentflow.domain.knowledge.KnowledgeBaseRequest;
 import com.openagentflow.domain.knowledge.KnowledgeBaseSummary;
 import com.openagentflow.domain.knowledge.KnowledgeChunkSummary;
 import com.openagentflow.domain.knowledge.KnowledgeDocumentSummary;
+import com.openagentflow.domain.knowledge.EnhancedQueryPlan;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalRequest;
 import com.openagentflow.domain.knowledge.KnowledgeRetrievalResult;
 import com.openagentflow.domain.knowledge.KnowledgeSource;
 import com.openagentflow.domain.knowledge.KnowledgeUploadResult;
 import com.openagentflow.domain.knowledge.KnowledgeVectorRebuildResult;
 import com.openagentflow.domain.knowledge.RagRetrievalOutcome;
+import com.openagentflow.domain.knowledge.RerankResult;
 import com.openagentflow.entity.AsyncTaskEntity;
 import com.openagentflow.entity.AgentEntity;
 import com.openagentflow.entity.AgentKnowledgeBindingEntity;
@@ -129,6 +131,15 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
     /** OpenSearch BM25检索服务。 */
     private final KeywordSearchService keywordSearchService;
 
+    /** 查询改写、多查询和会话指代消解策略。 */
+    private final QueryEnhancementPolicy queryEnhancementPolicy;
+
+    /** 多查询召回候选融合策略。 */
+    private final MultiQueryFusionPolicy multiQueryFusionPolicy;
+
+    /** 真实 Cross-Encoder 重排服务。 */
+    private final CrossEncoderRerankService crossEncoderRerankService;
+
     /** JDBC 工具。 */
     private final JdbcTemplate jdbcTemplate;
 
@@ -154,6 +165,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                 EmbeddingService embeddingService,
                                 MilvusKnowledgeVectorService milvusKnowledgeVectorService,
                                 KeywordSearchService keywordSearchService,
+                                QueryEnhancementPolicy queryEnhancementPolicy,
+                                MultiQueryFusionPolicy multiQueryFusionPolicy,
+                                CrossEncoderRerankService crossEncoderRerankService,
                                 JdbcTemplate jdbcTemplate,
                                 ObjectMapper objectMapper,
                                 OpenAgentFlowProperties properties) {
@@ -173,6 +187,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         this.embeddingService = embeddingService;
         this.milvusKnowledgeVectorService = milvusKnowledgeVectorService;
         this.keywordSearchService = keywordSearchService;
+        this.queryEnhancementPolicy = queryEnhancementPolicy;
+        this.multiQueryFusionPolicy = multiQueryFusionPolicy;
+        this.crossEncoderRerankService = crossEncoderRerankService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -481,6 +498,9 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         configMap.put("minCitationCount", normalizeMinCitationCount(request.getMinCitationCount()));
         configMap.put("vectorWeight", 0.72D);
         configMap.put("keywordWeight", 0.28D);
+        configMap.put("queryRewriteEnabled", Boolean.TRUE.equals(properties.getRag().getQueryRewriteEnabled()));
+        configMap.put("multiQueryEnabled", Boolean.TRUE.equals(properties.getRag().getMultiQueryEnabled()));
+        configMap.put("maxQueryVariants", properties.getRag().getMaxQueryVariants());
         String config = toJson(configMap);
         for (String kbId : uniqueIds) {
             KnowledgeBaseEntity kb = requireKnowledgeBase(kbId);
@@ -516,6 +536,22 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
      * @return RAG 聚合检索结果
      */
     public RagRetrievalOutcome retrieveForAgentWithPolicy(AgentEntity agent, String query, String runId) {
+        return retrieveForAgentWithPolicy(agent, query, runId, "");
+    }
+
+    /**
+     * 根据 Agent 绑定的知识库执行 RAG 检索，并支持用最近会话消解查询指代。
+     *
+     * @param agent Agent 实体
+     * @param query 用户问题
+     * @param runId 运行 ID
+     * @param conversationContext 最近会话上下文，可为空
+     * @return RAG 聚合检索结果
+     */
+    public RagRetrievalOutcome retrieveForAgentWithPolicy(AgentEntity agent,
+                                                          String query,
+                                                          String runId,
+                                                          String conversationContext) {
         RagRetrievalOutcome outcome = new RagRetrievalOutcome();
         outcome.setSources(List.of());
         outcome.setTrustedAnswerMode(false);
@@ -527,6 +563,13 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         outcome.setScoreThreshold(properties.getRag().getDefaultScoreThreshold());
         outcome.setLowConfidenceThreshold(Math.max(properties.getRag().getDefaultScoreThreshold(), 0.62D));
         outcome.setQualityAdvice("");
+        outcome.setOriginalQuery(query);
+        outcome.setEnhancedQueries(List.of());
+        outcome.setCanonicalQuery(query);
+        outcome.setContextResolved(false);
+        outcome.setRerankMode("disabled");
+        outcome.setRerankErrorMessage("");
+        outcome.setRerankLatencyMs(0);
         if (agent == null || !StringUtils.hasText(query)) {
             return outcome;
         }
@@ -558,7 +601,30 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
             minCitationCount = Math.max(minCitationCount, options.minCitationCount);
             scoreThreshold = Math.max(scoreThreshold, options.scoreThreshold);
             lowConfidenceThreshold = Math.max(lowConfidenceThreshold, options.lowConfidenceThreshold);
+            options.conversationContext = conversationContext;
             KnowledgeRetrievalResult result = retrieveFromKnowledgeBase(kb, agent.getId(), runId, query, options);
+            if (outcome.getEnhancedQueries().isEmpty()) {
+                outcome.setEnhancedQueries(result.getEnhancedQueries());
+                outcome.setCanonicalQuery(result.getCanonicalQuery());
+            }
+            outcome.setContextResolved(Boolean.TRUE.equals(outcome.getContextResolved())
+                    || Boolean.TRUE.equals(result.getContextResolved()));
+            if ("cross_encoder".equals(result.getRerankMode())) {
+                outcome.setRerankMode("cross_encoder");
+                outcome.setRerankModelId(result.getRerankModelId());
+                outcome.setRerankLatencyMs(Math.max(outcome.getRerankLatencyMs(),
+                        result.getRerankLatencyMs() == null ? 0 : result.getRerankLatencyMs()));
+            } else if ("disabled".equals(outcome.getRerankMode()) && result.getRerankMode() != null) {
+                outcome.setRerankMode(result.getRerankMode());
+                outcome.setRerankModelId(result.getRerankModelId());
+                outcome.setRerankLatencyMs(result.getRerankLatencyMs());
+            }
+            if (StringUtils.hasText(result.getRerankErrorMessage())) {
+                String previousError = safeText(outcome.getRerankErrorMessage());
+                outcome.setRerankErrorMessage(previousError.isBlank()
+                        ? kb.getKbName() + "：" + result.getRerankErrorMessage()
+                        : previousError + "；" + kb.getKbName() + "：" + result.getRerankErrorMessage());
+            }
             confidenceScore = Math.max(confidenceScore, result.getConfidenceScore() == null ? 0D : result.getConfidenceScore());
             if (StringUtils.hasText(result.getRejectReason())) {
                 rejectReasons.add(kb.getKbName() + "：" + result.getRejectReason());
@@ -653,6 +719,16 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                                                               String query,
                                                               RetrievalOptions options) {
         Instant startedAt = Instant.now();
+        EnhancedQueryPlan queryPlan = buildEnhancedQueryPlan(query, options);
+        options.enhancedQueries = queryPlan.getVariants();
+        options.originalQuery = queryPlan.getOriginalQuery();
+        options.canonicalQuery = queryPlan.getCanonicalQuery();
+        options.contextResolved = queryPlan.isContextResolved();
+        options.rerankModelId = kb.getRerankModelId();
+        options.rerankMode = options.rerankEnabled
+                ? (StringUtils.hasText(kb.getRerankModelId()) ? "cache" : "rule")
+                : "disabled";
+        options.rerankLatencyMs = 0;
         String cacheKey = retrievalCacheKey(kb.getId(), query, options);
         KnowledgeRetrievalResult cached = readRetrievalCache(cacheKey, options);
         if (cached != null) {
@@ -676,14 +752,47 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
             cached.getSources().forEach(source -> source.setRetrievalLogId(logId));
             cached.setRetrievalLogId(logId);
             cached.setLatencyMs((int) Duration.between(startedAt, Instant.now()).toMillis());
+            applyRetrievalMetadata(cached, queryPlan, options);
             return cached;
         }
-        List<String> terms = extractQueryTerms(query);
-        List<Double> queryVector = shouldUseVector(options.searchMode)
-                ? embeddingService.embed(embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId()), List.of(query)).getFirst()
+        List<String> variants = options.enhancedQueries.isEmpty() ? List.of(query) : options.enhancedQueries;
+        List<List<Double>> queryVectors = shouldUseVector(options.searchMode)
+                ? embeddingService.embed(embeddingService.resolveEmbeddingModel(kb.getEmbeddingModelId()), variants)
                 : List.of();
-        List<RetrievalCandidate> candidates = recallCandidates(kb, query, terms, queryVector, options);
-        List<RetrievalCandidate> rankedCandidates = rankCandidates(candidates, query, terms, options);
+        List<List<MultiQueryFusionPolicy.RankedHit<RetrievalCandidate>>> queryHits = new ArrayList<>();
+        for (int index = 0; index < variants.size(); index++) {
+            String variant = variants.get(index);
+            List<String> variantTerms = extractQueryTerms(variant);
+            List<Double> queryVector = queryVectors.size() > index ? queryVectors.get(index) : List.of();
+            List<RetrievalCandidate> recalled = recallCandidates(kb, variant, variantTerms, queryVector, options);
+            List<MultiQueryFusionPolicy.RankedHit<RetrievalCandidate>> rankedHits = recalled.stream()
+                    .sorted(Comparator.comparing((RetrievalCandidate item) -> item.baseScore).reversed())
+                    .limit(options.candidateK)
+                    .map(candidate -> new MultiQueryFusionPolicy.RankedHit<>(
+                            candidate.chunk.getId(), candidate, candidate.baseScore, recalled.indexOf(candidate) + 1))
+                    .toList();
+            queryHits.add(rankedHits);
+        }
+        List<MultiQueryFusionPolicy.FusedHit<RetrievalCandidate>> fusedHits = multiQueryFusionPolicy.fuse(
+                queryHits, options.candidateK);
+        List<RetrievalCandidate> candidates = fusedHits.stream().map(fused -> {
+            RetrievalCandidate candidate = fused.payload();
+            // 多个查询同时命中同一分片时只做有限加权，避免查询变体数量改变分数尺度。
+            candidate.baseScore = clamp(fused.bestScore() + Math.min(0.06D, (fused.hitCount() - 1) * 0.02D), 0D, 1D);
+            return candidate;
+        }).toList();
+        List<String> terms = variants.stream()
+                .flatMap(variant -> extractQueryTerms(variant).stream())
+                .distinct()
+                .toList();
+        List<RetrievalCandidate> rankedCandidates = rankCandidates(candidates,
+                options.canonicalQuery, terms, options);
+        RerankResult rerankResult = applyCrossEncoderRerank(kb, options.canonicalQuery, rankedCandidates, options);
+        options.rerankMode = rerankResult.getMode();
+        options.rerankModelId = rerankResult.getModelId();
+        options.rerankLatencyMs = rerankResult.getLatencyMs();
+        options.rerankErrorMessage = rerankResult.getErrorMessage();
+        rankedCandidates = applyRerankScores(rankedCandidates, rerankResult);
         List<KnowledgeSource> sources = rankedCandidates.stream()
                 .filter(candidate -> candidate.finalScore >= options.scoreThreshold)
                 .limit(options.topK)
@@ -695,6 +804,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
                 ? "未召回达到低置信阈值的可靠片段，建议拒答或引导用户补充问题"
                 : "";
         String qualityAdvice = buildQualityAdvice(options, rankedCandidates.size(), sources.size(), lowConfidence);
+        List<Double> queryVector = queryVectors.isEmpty() ? List.of() : queryVectors.getFirst();
         String logId = saveRetrievalLog(kb, agentId, runId, query, queryVector, options, sources, rankedCandidates.size(), confidenceScore, lowConfidence, rejectReason, qualityAdvice, startedAt);
         sources.forEach(source -> source.setRetrievalLogId(logId));
         if (!sources.isEmpty()) {
@@ -716,7 +826,84 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         result.setScoreThreshold(options.scoreThreshold);
         result.setLowConfidenceThreshold(options.lowConfidenceThreshold);
         result.setQualityAdvice(qualityAdvice);
+        applyRetrievalMetadata(result, queryPlan, options);
         return result;
+    }
+
+    /** 构建本次检索使用的查询增强计划，关闭开关时退化为单个原始查询。 */
+    private EnhancedQueryPlan buildEnhancedQueryPlan(String query, RetrievalOptions options) {
+        EnhancedQueryPlan plan = queryEnhancementPolicy.enhance(
+                query, options.conversationContext, options.maxQueryVariants);
+        if (!options.queryRewriteEnabled) {
+            plan.setCanonicalQuery(plan.getOriginalQuery());
+            plan.setVariants(List.of(plan.getOriginalQuery()));
+            plan.setSynonymExpansions(Map.of());
+            plan.setContextResolved(false);
+            return plan;
+        }
+        if (!options.multiQueryEnabled) {
+            plan.setVariants(List.of(plan.getCanonicalQuery()));
+        }
+        return plan;
+    }
+
+    /**
+     * 调用真实 Cross-Encoder，并把失败明确标记为规则降级。
+     */
+    private RerankResult applyCrossEncoderRerank(KnowledgeBaseEntity kb,
+                                                 String query,
+                                                 List<RetrievalCandidate> candidates,
+                                                 RetrievalOptions options) {
+        RerankResult result = new RerankResult();
+        result.setModelId(kb.getRerankModelId());
+        if (!options.rerankEnabled) {
+            result.setMode("disabled");
+            return result;
+        }
+        if (!StringUtils.hasText(kb.getRerankModelId()) || candidates.isEmpty()) {
+            result.setMode("rule");
+            return result;
+        }
+        int limit = Math.min(candidates.size(), properties.getRag().getRerankCandidateLimit() == null
+                ? 30 : properties.getRag().getRerankCandidateLimit());
+        List<String> documents = candidates.stream()
+                .limit(limit)
+                .map(candidate -> expandParentChunk(candidate.chunk))
+                .map(KnowledgeChunkEntity::getContent)
+                .map(this::safeText)
+                .toList();
+        return crossEncoderRerankService.rerank(kb.getRerankModelId(), query, documents);
+    }
+
+    /** 将真实重排分数写回候选，未成功时保留规则重排结果。 */
+    private List<RetrievalCandidate> applyRerankScores(List<RetrievalCandidate> candidates, RerankResult result) {
+        if (result == null || !result.isSuccess() || result.getScores() == null) {
+            return candidates;
+        }
+        int scoreCount = Math.min(candidates.size(), result.getScores().size());
+        for (int index = 0; index < scoreCount; index++) {
+            Double score = result.getScores().get(index);
+            if (score != null) {
+                candidates.get(index).finalScore = clamp(score, 0D, 1D);
+            }
+        }
+        return candidates.stream()
+                .sorted(Comparator.comparing((RetrievalCandidate item) -> item.finalScore).reversed())
+                .toList();
+    }
+
+    /** 将增强查询和重排运行信息写入检索结果。 */
+    private void applyRetrievalMetadata(KnowledgeRetrievalResult result,
+                                       EnhancedQueryPlan queryPlan,
+                                       RetrievalOptions options) {
+        result.setOriginalQuery(queryPlan.getOriginalQuery());
+        result.setCanonicalQuery(queryPlan.getCanonicalQuery());
+        result.setEnhancedQueries(queryPlan.getVariants());
+        result.setContextResolved(queryPlan.isContextResolved());
+        result.setRerankMode(options.rerankMode);
+        result.setRerankModelId(options.rerankModelId);
+        result.setRerankLatencyMs(options.rerankLatencyMs);
+        result.setRerankErrorMessage(options.rerankErrorMessage);
     }
 
     /**
@@ -1289,6 +1476,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         }
         ModelConfigEntity embeddingModel = embeddingService.resolveEmbeddingModel(request.getEmbeddingModelId());
         entity.setEmbeddingModelId(embeddingModel.getId());
+        entity.setRerankModelId(StringUtils.hasText(request.getRerankModelId()) ? request.getRerankModelId().trim() : null);
         entity.setVectorConnectionId(DEFAULT_VECTOR_CONNECTION_ID);
         entity.setVectorCollectionId(DEFAULT_VECTOR_COLLECTION_ID);
         entity.setMilvusCollectionName(properties.getMilvus().getDefaultKnowledgeCollection());
@@ -1505,6 +1693,17 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         searchParams.put("rejectLowConfidence", options.rejectLowConfidence);
         searchParams.put("rejectReason", rejectReason);
         searchParams.put("qualityAdvice", qualityAdvice);
+        searchParams.put("queryRewriteEnabled", options.queryRewriteEnabled);
+        searchParams.put("multiQueryEnabled", options.multiQueryEnabled);
+        searchParams.put("maxQueryVariants", options.maxQueryVariants);
+        searchParams.put("originalQuery", options.originalQuery);
+        searchParams.put("canonicalQuery", options.canonicalQuery);
+        searchParams.put("enhancedQueries", options.enhancedQueries);
+        searchParams.put("contextResolved", options.contextResolved);
+        searchParams.put("rerankMode", options.rerankMode);
+        searchParams.put("rerankModelId", options.rerankModelId);
+        searchParams.put("rerankLatencyMs", options.rerankLatencyMs);
+        searchParams.put("rerankErrorMessage", options.rerankErrorMessage);
         searchParams.put("engine", "mysql_hybrid_fallback");
         log.setMilvusSearchParams(toJson(searchParams));
         log.setSearchMode(options.searchMode);
@@ -1544,6 +1743,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         item.setWorkspaceName(findWorkspaceName(entity.getWorkspaceId()));
         item.setEmbeddingModelId(entity.getEmbeddingModelId());
         item.setEmbeddingModelName(findModelName(entity.getEmbeddingModelId()));
+        item.setRerankModelId(entity.getRerankModelId());
         item.setChunkStrategy(entity.getChunkStrategy());
         item.setChunkSize(entity.getChunkSize());
         item.setChunkOverlap(entity.getChunkOverlap());
@@ -1572,6 +1772,7 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         target.setWorkspaceName(source.getWorkspaceName());
         target.setEmbeddingModelId(source.getEmbeddingModelId());
         target.setEmbeddingModelName(source.getEmbeddingModelName());
+        target.setRerankModelId(source.getRerankModelId());
         target.setChunkStrategy(source.getChunkStrategy());
         target.setChunkSize(source.getChunkSize());
         target.setChunkOverlap(source.getChunkOverlap());
@@ -1776,16 +1977,25 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
      * @return 参数指纹
      */
     private String retrievalOptionsFingerprint(RetrievalOptions options) {
-        return toJson(Map.of(
-                "topK", options.topK,
-                "candidateK", options.candidateK,
-                "scoreThreshold", options.scoreThreshold,
-                "searchMode", safeString(options.searchMode),
-                "rerankEnabled", options.rerankEnabled,
-                "documentIds", options.documentIds,
-                "pageNo", options.pageNo == null ? "" : options.pageNo,
-                "metadataKeyword", safeString(options.metadataKeyword)
-        ));
+        Map<String, Object> fingerprint = new LinkedHashMap<>();
+        fingerprint.put("topK", options.topK);
+        fingerprint.put("candidateK", options.candidateK);
+        fingerprint.put("scoreThreshold", options.scoreThreshold);
+        fingerprint.put("searchMode", safeString(options.searchMode));
+        fingerprint.put("rerankEnabled", options.rerankEnabled);
+        fingerprint.put("rerankModelId", safeString(options.rerankModelId));
+        fingerprint.put("vectorWeight", options.vectorWeight);
+        fingerprint.put("keywordWeight", options.keywordWeight);
+        fingerprint.put("lowConfidenceThreshold", options.lowConfidenceThreshold);
+        fingerprint.put("rejectLowConfidence", options.rejectLowConfidence);
+        fingerprint.put("queryRewriteEnabled", options.queryRewriteEnabled);
+        fingerprint.put("multiQueryEnabled", options.multiQueryEnabled);
+        fingerprint.put("maxQueryVariants", options.maxQueryVariants);
+        fingerprint.put("conversationContext", safeString(options.conversationContext));
+        fingerprint.put("documentIds", options.documentIds);
+        fingerprint.put("pageNo", options.pageNo == null ? "" : options.pageNo);
+        fingerprint.put("metadataKeyword", safeString(options.metadataKeyword));
+        return toJson(fingerprint);
     }
 
     /**
@@ -1880,6 +2090,14 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         options.documentIds = normalizeDocumentIds(request.getDocumentIds());
         options.pageNo = request.getPageNo() != null && request.getPageNo() > 0 ? request.getPageNo() : null;
         options.metadataKeyword = safeText(request.getMetadataKeyword()).trim();
+        options.queryRewriteEnabled = request.getQueryRewriteEnabled() == null
+                ? Boolean.TRUE.equals(properties.getRag().getQueryRewriteEnabled())
+                : Boolean.TRUE.equals(request.getQueryRewriteEnabled());
+        options.multiQueryEnabled = request.getMultiQueryEnabled() == null
+                ? Boolean.TRUE.equals(properties.getRag().getMultiQueryEnabled())
+                : Boolean.TRUE.equals(request.getMultiQueryEnabled());
+        options.maxQueryVariants = normalizeQueryVariantLimit(request.getMaxQueryVariants());
+        options.conversationContext = safeText(request.getConversationContext()).trim();
         return options;
     }
 
@@ -1906,7 +2124,21 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         options.documentIds = normalizeDocumentIds(readStringList(config.get("documentIds")));
         options.pageNo = intValue(config.get("pageNo"), 0) > 0 ? intValue(config.get("pageNo"), 0) : null;
         options.metadataKeyword = safeText(asString(config.get("metadataKeyword"))).trim();
+        options.queryRewriteEnabled = booleanValue(config.get("queryRewriteEnabled"),
+                Boolean.TRUE.equals(properties.getRag().getQueryRewriteEnabled()));
+        options.multiQueryEnabled = booleanValue(config.get("multiQueryEnabled"),
+                Boolean.TRUE.equals(properties.getRag().getMultiQueryEnabled()));
+        options.maxQueryVariants = normalizeQueryVariantLimit(intValue(config.get("maxQueryVariants"),
+                properties.getRag().getMaxQueryVariants()));
         return options;
+    }
+
+    /** 将查询变体数量限制在稳定范围内，避免一次请求放大下游压力。 */
+    private int normalizeQueryVariantLimit(Integer value) {
+        int fallback = properties.getRag().getMaxQueryVariants() == null
+                ? 4 : properties.getRag().getMaxQueryVariants();
+        int limit = value == null ? fallback : value;
+        return Math.max(1, Math.min(8, limit));
     }
 
     /**
@@ -2514,6 +2746,30 @@ public class KnowledgeBaseService implements DistributedTaskHandler {
         private Integer pageNo;
         /** 元数据关键词过滤。 */
         private String metadataKeyword = "";
+        /** 是否启用查询改写。 */
+        private boolean queryRewriteEnabled;
+        /** 是否启用多查询融合。 */
+        private boolean multiQueryEnabled;
+        /** 最大查询变体数量。 */
+        private int maxQueryVariants;
+        /** 会话上下文。 */
+        private String conversationContext = "";
+        /** 本次实际使用的查询变体。 */
+        private List<String> enhancedQueries = List.of();
+        /** 本次实际使用的规范查询。 */
+        private String originalQuery = "";
+        /** 查询理解后的标准查询。 */
+        private String canonicalQuery = "";
+        /** 本次是否完成会话指代消解。 */
+        private boolean contextResolved;
+        /** 实际重排模式。 */
+        private String rerankMode;
+        /** 实际重排模型 ID。 */
+        private String rerankModelId;
+        /** 实际重排耗时。 */
+        private int rerankLatencyMs;
+        /** 重排降级原因。 */
+        private String rerankErrorMessage;
     }
 
     /**

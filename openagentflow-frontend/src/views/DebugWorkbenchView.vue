@@ -69,6 +69,43 @@ const evidenceSummary = computed(() => ({
   latencyMs: Number(runDone.value.latencyMs || 0),
 }));
 
+const routeSummary = computed(() => {
+  const value = runDone.value.intentRoute || runMeta.value.intentRoute;
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const routePlan = value as Record<string, unknown>;
+  const selectedTools = Array.isArray(routePlan.selectedToolNames)
+    ? routePlan.selectedToolNames.map((item) => String(item)).filter(Boolean)
+    : [];
+  const intents = Array.isArray(routePlan.intents)
+    ? routePlan.intents.map((item) => String(item)).filter(Boolean)
+    : [];
+  const title = routePlan.needsClarification === true
+    ? '需要补充实体'
+    : routePlan.needTool === true && routePlan.needRag === true
+      ? '工具 + 知识库'
+      : routePlan.needTool === true
+        ? '工具调用'
+        : routePlan.needRag === true
+          ? '知识库检索'
+          : '直接回答';
+  const detail = [
+    intents.length ? `意图：${intents.join('、')}` : '',
+    selectedTools.length ? `工具：${selectedTools.join('、')}` : '工具：未触发',
+    routePlan.missingEntities && Array.isArray(routePlan.missingEntities) && routePlan.missingEntities.length
+      ? `缺少：${routePlan.missingEntities.join('、')}`
+      : '',
+    String(routePlan.reason || ''),
+  ].filter(Boolean).join('；');
+  return { title, detail };
+});
+
+const enhancedQuerySummary = computed(() => {
+  const value = runDone.value.enhancedQueries || runMeta.value.enhancedQueries;
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+});
+
 function switchEvidencePanel(panel: EvidencePanel) {
   activeEvidencePanel.value = panel;
 }
@@ -343,34 +380,11 @@ async function sendMessageWithText(question: string, displayQuestion = question)
   }
 }
 
-function buildCleanHistory(question: string): ChatMessage[] {
-  const orderIntent = hasOrderRuntimeIntent(question);
-  return messages.value
-    .filter((message) => orderIntent || !isOrderFailureAssistantMessage(message))
-    .map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
-}
-
-function hasOrderRuntimeIntent(text: string) {
-  const value = text.trim().toLowerCase();
-  if (!value) {
-    return false;
-  }
-  const hasOrderNo = /oaf-demo-\d+/i.test(value) || /\b[a-z]{1,8}[-_]\d{4,}\b/i.test(value) || /\b\d{8,}\b/.test(value);
-  const hasOrderAction = ['订单', 'order', '物流', '快递', '运单', '包裹', '到哪里', '到哪', '状态', '进度', '发货', '签收', '配送', '送达', '退款', '售后'].some((keyword) => value.includes(keyword));
-  const knowledgeOnly = ['产品', '优惠', '优惠券', '优惠卷', '活动', '折扣', '满减', '促销', '会员', '积分', '价格', '套餐'].some((keyword) => value.includes(keyword));
-  return hasOrderNo && hasOrderAction && !knowledgeOnly;
-}
-
-function isOrderFailureAssistantMessage(message: UiMessage) {
-  if (message.role !== 'assistant') {
-    return false;
-  }
-  const value = message.content.toLowerCase();
-  return ['订单查询', '未匹配到相关订单', '未找到对应订单', '未找到该订单', '参数有误', 'oaf-demo-1001', '演示订单号', '非订单号', '查询演示订单']
-    .some((keyword) => value.includes(keyword));
+function buildCleanHistory(_question: string): ChatMessage[] {
+  return messages.value.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
 }
 
 function streamHandlers(assistantMessage: UiMessage) {
@@ -593,6 +607,10 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
         <small v-if="trustedAnswer?.rejectReason">{{ trustedAnswer.rejectReason }}</small>
       </div>
       <RuntimeInterpreter title="Runtime 解释器" :phases="runtimePhases" compact />
+      <div v-if="routeSummary" class="insight-strip runtime-route-summary">
+        <b>本轮路由：{{ routeSummary.title }}</b>
+        <p>{{ routeSummary.detail }}</p>
+      </div>
       <section class="trace-evidence-tabs" aria-label="调试证据切换" role="tablist">
         <input id="debug-evidence-sources" v-model="activeEvidencePanel" class="trace-evidence-radio" type="radio" name="debug-evidence-panel" value="sources" />
         <label
@@ -700,6 +718,12 @@ watch(selectedAgentId, (agentId, previousAgentId) => {
 completionTokens: {{ runDone.completionTokens || 0 }}
 totalTokens: {{ runDone.totalTokens || 0 }}
 latencyMs: {{ runDone.latencyMs || 0 }}</pre>
+          <div v-if="enhancedQuerySummary.length || runDone.rerankMode || runMeta.rerankMode" class="insight-strip retrieval-runtime-summary">
+            <b>检索增强链路</b>
+            <p v-if="enhancedQuerySummary.length">查询变体：{{ enhancedQuerySummary.join(' / ') }}</p>
+            <p>重排模式：{{ runDone.rerankMode || runMeta.rerankMode }}；重排耗时：{{ runDone.rerankLatencyMs || runMeta.rerankLatencyMs || 0 }}ms</p>
+            <p v-if="runDone.rerankErrorMessage || runMeta.rerankErrorMessage" class="muted-text">降级原因：{{ runDone.rerankErrorMessage || runMeta.rerankErrorMessage }}</p>
+          </div>
         </div>
       </section>
     </aside>

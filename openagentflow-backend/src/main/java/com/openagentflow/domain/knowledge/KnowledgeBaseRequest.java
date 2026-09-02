@@ -23,6 +23,9 @@ public class KnowledgeBaseRequest {
     /** Embedding 模型 ID。 */
     private String embeddingModelId;
 
+    /** Cross-Encoder 重排模型 ID，可为空以使用规则重排。 */
+    private String rerankModelId;
+
     /** 切片策略。 */
     private String chunkStrategy;
 
@@ -76,6 +79,14 @@ public class KnowledgeBaseRequest {
 
     public void setEmbeddingModelId(String embeddingModelId) {
         this.embeddingModelId = embeddingModelId;
+    }
+
+    public String getRerankModelId() {
+        return rerankModelId;
+    }
+
+    public void setRerankModelId(String rerankModelId) {
+        this.rerankModelId = rerankModelId;
     }
 
     public String getChunkStrategy() {

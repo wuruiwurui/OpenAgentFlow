@@ -26,6 +26,7 @@ export interface KnowledgeBaseSummary {
   description?: string;
   embeddingModelId?: string;
   embeddingModelName?: string;
+  rerankModelId?: string;
   chunkStrategy: string;
   chunkSize: number;
   chunkOverlap: number;
@@ -94,6 +95,7 @@ export interface KnowledgeBaseRequest {
   kbName: string;
   description?: string;
   embeddingModelId?: string;
+  rerankModelId?: string;
   chunkStrategy?: string;
   chunkSize?: number;
   chunkOverlap?: number;
@@ -134,6 +136,14 @@ export interface KnowledgeRetrievalResult {
   qualityAdvice?: string;
   scoreThreshold?: number;
   lowConfidenceThreshold?: number;
+  originalQuery?: string;
+  canonicalQuery?: string;
+  enhancedQueries?: string[];
+  contextResolved?: boolean;
+  rerankMode?: string;
+  rerankModelId?: string;
+  rerankLatencyMs?: number;
+  rerankErrorMessage?: string;
 }
 
 export interface KnowledgeRetrievalOptions {
@@ -150,6 +160,10 @@ export interface KnowledgeRetrievalOptions {
   metadataKeyword?: string;
   lowConfidenceThreshold?: number;
   rejectLowConfidence?: boolean;
+  queryRewriteEnabled?: boolean;
+  multiQueryEnabled?: boolean;
+  maxQueryVariants?: number;
+  conversationContext?: string;
 }
 
 export interface KnowledgeVectorRebuildResult {
@@ -177,6 +191,9 @@ export interface AgentKnowledgeBindingOptions {
   trustedAnswerMode?: boolean;
   citationRequired?: boolean;
   minCitationCount?: number;
+  queryRewriteEnabled?: boolean;
+  multiQueryEnabled?: boolean;
+  maxQueryVariants?: number;
 }
 
 export interface KnowledgeGovernanceOverview {

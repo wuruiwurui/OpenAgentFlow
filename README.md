@@ -147,6 +147,7 @@ dm/
 - MinIO CORS：`OAF_MINIO_CORS_ALLOWED_ORIGINS` 仅配置允许上传的前端正式域名，生产环境不要使用通配来源。
 - Worker 角色：`OAF_KAFKA_WORKER_ROLE` 支持 `all`、`document`、`evaluation`、`integration`、`maintenance`，可按负载类型分别部署。
 - Embedding 背压：通过 `OAF_EMBEDDING_QPS`、`OAF_EMBEDDING_CONCURRENCY` 和 Redis 分布式许可控制模型端点压力；生产环境禁止本地模拟向量兜底。
+- RAG 查询增强：`OAF_RAG_QUERY_REWRITE_ENABLED`、`OAF_RAG_MULTI_QUERY_ENABLED`、`OAF_RAG_MAX_QUERY_VARIANTS` 和 `OAF_RAG_RERANK_CANDIDATE_LIMIT` 控制查询改写、多查询融合和 Cross-Encoder 候选数量；知识库的 `rerankModelId` 为空时使用规则重排。
 - 后端上下文路径：`/api`
 - JWT Secret：生产环境必须通过 `OAF_JWT_SECRET` 覆盖
 - IDEA控制台启动时会显示后端启动成功摘要、IP、端口、Swagger和基础依赖地址；空闲阶段保持安静，仅在HTTP请求ID存在时输出请求URL、Spring MVC匹配路由、业务链路、MyBatis SQL耗时和JdbcTemplate SQL。定时任务、Kafka消费和内部Trace不会持续刷出成功SQL，无请求上下文的ERROR仍会显示。SQL参数值不输出，避免密码、Token与API Key泄露。可通过`OAF_SQL_LOG_ENABLED`、`OAF_SLOW_SQL_MS`、`OAF_SLOW_REQUEST_MS`调整。
@@ -238,9 +239,10 @@ V052__p1_notification_center.sql
 V053__permission_governance_enhancement.sql
 V054__workspace_governance_permissions.sql
 V055__least_privilege_workspace_role_fix.sql
+V056__tool_intent_routing_metadata.sql
 ```
 
-后端使用 Flyway 管理迁移。空数据库按 V001-V055 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V055 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
+后端使用 Flyway 管理迁移。空数据库按 V001-V056 顺序初始化；已有非空数据库默认以 V041 建立基线，再执行 V042-V056 及后续版本。`openagentflow-sql/mysql` 是 SQL 主目录，`openagentflow-backend/src/main/resources/db/migration` 是运行时副本，修改 SQL 后执行：
 
 ```powershell
 .\scripts\sync-flyway-migrations.ps1
@@ -332,6 +334,8 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P24 Memory 记忆中心 | 已完成 | 短期记忆、长期记忆、任务记忆、向量记忆、客服助手长期记忆模板、召回测试、过期清理、调试链路自动沉淀、SSE 异步登录态传递 |
 | P26 评测增强 LLM-as-Judge | 已完成 | 裁判模型评分、Judge Prompt、质量维度 JSON、规则兜底、Judge 综合分和低分原因 |
 | P27 RAG 生产级召回增强 | 已完成 | Parent-Child 分片、分片元数据、已有知识库默认策略迁移、重复文件复用、Office 文档解析增强、Embedding 批处理限流、权限感知检索、Agent 链路热点检索缓存、混合召回、候选扩召、向量/关键词权重、文档/页码/元数据过滤、重排、父分片上下文扩展、引用高亮、排序原因和低置信度建议 |
+| P77 通用意图路由与多意图治理 | 已完成 | 工具意图编码、路由示例、必填实体、结构化路由计划、多意图拆分、工具/RAG/直接回答分流、缺失实体确定性澄清、路由 Trace/SSE 解释和移除前端业务硬编码 |
+| P78 RAG 查询理解与重排增强 | 已完成 | 查询规范化、上下文指代消解、同义词扩展、多查询向量召回、跨查询 RRF 融合、候选去重、真实 Cross-Encoder 重排、失败规则降级、检索参数与增强链路可观测、调试台降级原因展示 |
 | P29 Agent Runtime 可视化解释器 | 已完成 | 调试台实时链路、Trace 复盘链路、Agent 详情策略预演、调试台右侧检索结果/工具调用/引用统计原生切换、右侧栏整体滚动、Runtime 解释器双倍高度、证据区固定高度滚动、引用来源抽屉卡片切换、详情页卡片切换、步骤时间线按需展示和内部滚动 |
 | P28 交付验收中心 | 已完成 | 环境检查、核心链路检查、风险提示、交付清单、报告生成和权限菜单 |
 | P29 工作流生产级增强 | 已完成 | 基础信息弹框新建、空画布、画布双击加节点、节点级执行条件、重试超时、失败分支、人工确认、变量映射、条件表达式、同步/异步运行、Kafka Outbox、有界并行分支、确定性JOIN、版本快照执行、稳定哈希灰度、工作流评测、子流程、插件SPI、API发布、沙箱、对话节点输出和运行中节点动效 |
@@ -367,7 +371,7 @@ cd E:\xm\OpenAgentFlow-Java\dm
 | P62 可部署供应链证明 | 已完成 | GHCR不可变镜像、Cosign镜像签名、GitHub provenance、平台准入回写和跨故障域调度 |
 | P63 Memory生产级增强 | 已完成 | LLM结构化事实提取、Redis短期记忆、Kafka异步沉淀、MySQL事实版本、Milvus ANN、租户标量过滤、混合排序、PII与冲突策略、容量配额、反馈学习、治理扫描、向量重建、用户遗忘和运营指标 |
 | P64 自动化测试与质量门禁 | 已完成 | JUnit可靠性规则、MySQL Flyway Testcontainers、Vitest分页规则、Playwright登录冒烟、JaCoCo、Maven Enforcer和GitHub Actions阻断门禁 |
-| P65 Flyway数据库迁移治理 | 已完成 | V001-V050类路径迁移、既有库V041基线、启动校验、禁止乱序与clean、SQL主目录同步脚本和迁移集成测试 |
+| P65 Flyway数据库迁移治理 | 已完成 | V001-V056类路径迁移、既有库V041基线、启动校验、禁止乱序与clean、SQL主目录同步脚本和迁移集成测试 |
 | P66 分布式执行正确性 | 已完成 | 文档DAG代次Fencing、根任务幂等初始化、事务化Fan-out、行锁唯一Fan-in、预期/实际条目屏障、最终数量对账、停滞巡检和问题自动收口 |
 | P67 AI持续评测 | 已完成 | 黄金评测基线、RAG/工具/Memory/工作流指标、版本差异、单项退化阈值和多资源发布阻断 |
 | P68 安全与合规治理 | 已完成 | 统一敏感数据脱敏、文件类型与压缩炸弹扫描、PII同意及数据主体申请、高风险工具双人审批和一次性执行令牌 |

@@ -72,6 +72,32 @@ class IntentRoutingPolicyTests {
         assertThat(plan.getUncoveredIntents()).isNotEmpty();
     }
 
+    /** 多个工具同时匹配时，应优先选择实体已经满足的汇总工具。 */
+    @Test
+    void shouldPreferReadyToolOverCandidateMissingEntity() throws Exception {
+        ToolDefinitionForModel detailTool = orderTool();
+        detailTool.setRoutingExamples(List.of("我有多少订单"));
+
+        ToolDefinitionForModel summaryTool = new ToolDefinitionForModel();
+        summaryTool.setId("tool-summary");
+        summaryTool.setName("order_summary");
+        summaryTool.setDescription("查询订单数量和订单列表");
+        summaryTool.setIntentCodes(List.of("order.summary"));
+        summaryTool.setRoutingExamples(List.of("我有多少订单"));
+        summaryTool.setParameters(objectMapper.readTree("""
+                {
+                  "type": "object",
+                  "properties": {}
+                }
+                """));
+
+        IntentRoutePlan plan = new IntentRoutingPolicy().plan(
+                "我有多少订单", List.of(detailTool, summaryTool), true);
+
+        assertThat(plan.getSelectedToolNames()).containsExactly("order_summary");
+        assertThat(plan.isNeedsClarification()).isFalse();
+    }
+
     /** 构造包含通用路由元数据的订单查询工具。 */
     private ToolDefinitionForModel orderTool() throws Exception {
         ToolDefinitionForModel tool = new ToolDefinitionForModel();

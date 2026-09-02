@@ -31,6 +31,9 @@ public class KnowledgeBaseSummary {
     /** 绑定的向量模型名称。 */
     private String embeddingModelName;
 
+    /** 绑定的 Cross-Encoder 重排模型 ID。 */
+    private String rerankModelId;
+
     /** 切片策略。 */
     private String chunkStrategy;
 
@@ -123,6 +126,14 @@ public class KnowledgeBaseSummary {
 
     public void setEmbeddingModelName(String embeddingModelName) {
         this.embeddingModelName = embeddingModelName;
+    }
+
+    public String getRerankModelId() {
+        return rerankModelId;
+    }
+
+    public void setRerankModelId(String rerankModelId) {
+        this.rerankModelId = rerankModelId;
     }
 
     public String getChunkStrategy() {

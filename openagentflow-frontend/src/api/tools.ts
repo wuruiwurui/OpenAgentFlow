@@ -13,6 +13,9 @@ export interface ToolDefinitionSummary {
   headers?: string;
   requestSchema?: string;
   responseSchema?: string;
+  intentCodes?: string[];
+  routingExamples?: string[];
+  requiredEntities?: string[];
   timeoutMs?: number;
   retryCount?: number;
   riskLevel: string;
@@ -40,6 +43,9 @@ export interface ToolDefinitionRequest {
   headers?: string;
   requestSchema?: string;
   responseSchema?: string;
+  intentCodes?: string[];
+  routingExamples?: string[];
+  requiredEntities?: string[];
   timeoutMs?: number;
   retryCount?: number;
   riskLevel?: string;

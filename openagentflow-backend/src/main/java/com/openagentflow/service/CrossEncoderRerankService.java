@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openagentflow.domain.knowledge.RerankResult;
 import com.openagentflow.entity.ModelConfigEntity;
 import com.openagentflow.entity.ModelProviderEntity;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -36,6 +37,7 @@ public class CrossEncoderRerankService {
     private final HttpClient httpClient;
 
     /** Spring 生产环境构造函数。 */
+    @Autowired
     public CrossEncoderRerankService(ModelProviderService modelProviderService, ObjectMapper objectMapper) {
         this(modelProviderService, objectMapper, HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
